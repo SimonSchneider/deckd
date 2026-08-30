@@ -1,0 +1,41 @@
+{
+  "name": "deckd",
+  "version": "1.0.0",
+  "description": "A self-contained deck-building service: a Marp markdown editor + renderer with an MCP server.",
+  "main": "index.js",
+  "bin": {
+    "deckd": "bin/deckd.mjs"
+  },
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p test/tsconfig.json"
+  },
+  "keywords": [],
+  "author": "Simon Schneider",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@marp-team/marp-cli": "4.5.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@puppeteer/browsers": "^2.13.0",
+    "express": "^4.22.2",
+    "jszip": "^3.10.1",
+    "pptxgenjs": "^4.0.1",
+    "puppeteer-core": "^24.40.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.25",
+    "@types/node": "^26.4.0",
+    "@types/supertest": "^6.0.3",
+    "supertest": "^7.2.2",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}

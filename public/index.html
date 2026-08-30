@@ -1,0 +1,975 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>deckd</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #1c1c1c;
+    --paper: #f7f5f2;
+    --panel: #ffffff;
+    --border: #e5e1da;
+    --green: #1f3a34;
+    --green-soft: #2d4f47;
+    --lime: #e8ff8a;
+    --muted: #6f6b64;
+    --error: #b3402e;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--paper); color: var(--ink); overflow-x: hidden;
+    display: flex; flex-direction: column;
+  }
+  h1, h2, h3 { margin: 0; font-weight: 600; }
+  a { color: inherit; }
+  button, select, input, textarea { font: inherit; color: inherit; }
+  [hidden] { display: none !important; }
+  code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  /* ---- buttons ---------------------------------------------------- */
+  .btn {
+    appearance: none; border-radius: 8px; border: 1px solid transparent; padding: 7px 14px;
+    font-size: 13px; font-weight: 600; cursor: pointer; line-height: 1.2; white-space: nowrap;
+  }
+  .btn:disabled { cursor: not-allowed; opacity: .5; }
+  .btn-primary { background: var(--lime); color: var(--green); }
+  .btn-primary:hover:not(:disabled) { filter: brightness(0.97); }
+  .btn-secondary { background: var(--panel); color: var(--ink); border-color: var(--border); }
+  .btn-secondary:hover:not(:disabled) { background: #fbfaf8; }
+  .btn-ghost { background: transparent; color: inherit; border-color: transparent; }
+  .btn-ghost:hover:not(:disabled) { background: rgba(0,0,0,.05); }
+  .btn-danger { background: transparent; color: var(--error); border-color: var(--border); }
+  .btn-danger:hover:not(:disabled) { background: rgba(179,64,46,.08); }
+  button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible, a:focus-visible {
+    outline: 2px solid var(--green-soft); outline-offset: 2px;
+  }
+  select {
+    border-radius: 8px; border: 1px solid var(--border); background: var(--panel); padding: 6px 10px;
+  }
+  .err { color: var(--error); font-size: 12px; min-height: 1.2em; }
+
+  /* ---- header bar: every global/session control lives here ------------ */
+  #mainHeader {
+    display: flex; align-items: center; gap: 10px; padding: 0 16px; height: 52px;
+    background: var(--green); color: #fff; flex-shrink: 0;
+  }
+  #mainHeader .btn-ghost, #mainHeader .back { color: #fff; }
+  /* select's own box stays white (var(--panel), set below); without this it inherits
+     #mainHeader's white text and renders invisible white-on-white. */
+  #mainHeader select { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+  .wordmark { font-weight: 650; font-size: 15px; letter-spacing: .01em; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .wordmark .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--lime); display: inline-block; }
+  .back { text-decoration: none; font-size: 13px; opacity: .85; flex-shrink: 0; }
+  .back:hover { opacity: 1; }
+  .header-group { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  .header-spacer { flex: 1; }
+
+  .statuschip {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #fff; opacity: .92;
+    background: rgba(255,255,255,.1); border-radius: 999px; padding: 3px 10px 3px 8px; flex-shrink: 0;
+  }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #6fbf73; flex-shrink: 0; }
+  .status-dot.working { background: #f0b23b; animation: pulse 1.1s ease-in-out infinite; }
+  .status-dot.broken { background: #e2685a; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+  /* ---- dropdown menus (download, mcp) hung off a header button --------- */
+  .menu-wrap { position: relative; flex-shrink: 0; }
+  .menu-list {
+    position: absolute; right: 0; top: calc(100% + 6px); background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12); min-width: 170px; padding: 6px; z-index: 20;
+    display: flex; flex-direction: column; gap: 2px; color: var(--ink);
+  }
+  .menu-list a, .menu-list button {
+    display: block; text-decoration: none; color: var(--ink); font-size: 13px; padding: 7px 9px;
+    border-radius: 6px; border: none; background: none; text-align: left; cursor: pointer; width: 100%;
+  }
+  .menu-list a:hover, .menu-list button:hover { background: #f1efe9; }
+
+  /* ---- MCP connect popover ---------------------------------------------- */
+  .popover {
+    position: absolute; right: 0; top: calc(100% + 8px); width: min(360px, calc(100vw - 32px));
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 12px 36px rgba(0,0,0,.18); padding: 16px; z-index: 20; color: var(--ink);
+  }
+  .popover h2 { font-size: 14px; margin-bottom: 8px; }
+  .popover p { font-size: 12.5px; color: var(--muted); margin: 0 0 10px; }
+  .popover p:last-child { margin-bottom: 0; }
+  .popover code { background: #f4f2ee; border-radius: 4px; padding: 1px 4px; }
+  .mcp-url-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .mcp-url-row code {
+    flex: 1; display: block; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+    overflow-wrap: anywhere; background: #f4f2ee;
+  }
+  .mcp-url-row .btn { padding: 6px 10px; font-size: 12px; flex-shrink: 0; }
+  .mcp-copy-status { font-size: 11px; color: var(--green-soft); min-height: 1.2em; margin: 0 0 8px; }
+
+  /* ---- new-deck dialog --------------------------------------------------- */
+  dialog#newDeckDialog {
+    border: none; border-radius: 12px; padding: 0; width: min(440px, calc(100vw - 32px));
+    box-shadow: 0 20px 60px rgba(0,0,0,.2);
+  }
+  dialog#newDeckDialog::backdrop { background: rgba(28,28,28,.35); }
+  #newDeckForm { display: flex; flex-direction: column; gap: 14px; padding: 22px; }
+  #newDeckForm label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600; }
+  #newDeckForm input[type=text] {
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-weight: 400;
+  }
+  .dropzone {
+    border: 1.5px dashed var(--border); border-radius: 10px; padding: 18px; text-align: center;
+    color: var(--muted); font-size: 12px; transition: border-color .12s ease, background .12s ease;
+  }
+  .dropzone.drag { border-color: var(--green-soft); background: rgba(45,79,71,.05); }
+  .dropzone button { background: none; border: none; color: var(--green-soft); font-weight: 600; cursor: pointer; padding: 0; text-decoration: underline; font-size: 12px; }
+  .picked { margin: 6px 0 0; font-weight: 600; color: var(--ink); }
+  .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+  /* ---- workspace: two-pane split fills all remaining height ------------ */
+  main.workspace { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+
+  .split { flex: 1; display: flex; min-height: 0; position: relative; }
+  .pane { min-width: 240px; display: flex; flex-direction: column; min-height: 0; }
+
+  .divider {
+    width: 6px; flex-shrink: 0; cursor: col-resize; background: var(--border); position: relative;
+    touch-action: none;
+  }
+  .divider::after {
+    content: ''; position: absolute; top: 50%; left: 50%; width: 3px; height: 28px;
+    background: var(--muted); border-radius: 2px; transform: translate(-50%, -50%); opacity: .5;
+  }
+  .divider:hover, .divider.dragging { background: var(--green-soft); }
+  .divider:hover::after, .divider.dragging::after { opacity: .9; background: #fff; }
+  #dragOverlay { position: fixed; inset: 0; z-index: 50; cursor: col-resize; display: none; }
+  #dragOverlay.on { display: block; }
+
+  .preview-pane { flex: 1 1 0; min-width: 240px; background: var(--paper); position: relative; }
+
+  .editor-pane { background: var(--panel); }
+  .editor-header {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border);
+    flex-shrink: 0; font-size: 13px; font-weight: 600;
+  }
+  .editor-header .spacer { flex: 1; }
+  .dirty-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--lime); border: 1px solid var(--green-soft); flex-shrink: 0; }
+  .editor-readonly-note {
+    font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; font-weight: 600;
+  }
+  .addimg-btn {
+    font-size: 12px; color: var(--green-soft); font-weight: 600; cursor: pointer; padding: 4px 6px;
+  }
+  .addimg-btn:hover { text-decoration: underline; }
+  .editor-conflict {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px; font-size: 12px;
+    background: #fbe9c9; border-bottom: 1px solid var(--border); color: #6b4a15; flex-shrink: 0;
+  }
+  .editor-conflict .btn { padding: 4px 10px; font-size: 12px; }
+  #editorTextarea {
+    flex: 1; width: 100%; min-height: 0; min-width: 0; resize: none; border: 0; outline: none; padding: 12px;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel); color: var(--ink);
+  }
+  #editorTextarea:read-only { background: #f4f2ee; color: var(--muted); }
+  .editor-status { font-size: 11px; color: var(--muted); min-height: 1.2em; padding: 0 12px 8px; }
+
+  .preview-body { flex: 1; min-height: 0; position: relative; display: flex; }
+  .shimmer {
+    position: absolute; top: 0; left: 0; right: 0; height: 3px; overflow: hidden; z-index: 5;
+  }
+  .shimmer::after {
+    content: ''; position: absolute; inset: 0; width: 40%;
+    background: linear-gradient(90deg, transparent, var(--lime), transparent);
+    animation: shimmer-move 1.2s ease-in-out infinite;
+  }
+  @keyframes shimmer-move { 0% { left: -40%; } 100% { left: 100%; } }
+  #pdf { flex: 1; width: 100%; border: 0; background: #55524c; }
+  .preview-empty {
+    flex: 1; width: 100%; display: flex; align-items: center; justify-content: center;
+    text-align: center; color: var(--muted); font-size: 13px; padding: 24px;
+  }
+  .preview-empty p { max-width: 320px; margin: 0; }
+
+  /* Replaces the old manually-toggled log drawer: a failed render surfaces its
+     output right where the preview would be, no extra click needed to see it. */
+  .render-error {
+    position: absolute; inset: 0; margin: 0; padding: 16px; overflow: auto; z-index: 6;
+    background: #14161a; color: #f0b3a8;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 1000px) {
+    #mainHeader { flex-wrap: wrap; height: auto; padding: 10px 16px; row-gap: 8px; }
+    .header-spacer { flex-basis: 100%; height: 0; }
+  }
+</style>
+</head>
+<body>
+
+<header id="mainHeader">
+  <div class="wordmark">deckd</div>
+
+  <div class="header-group">
+    <select id="sessionSwitcher" aria-label="Select a deck"></select>
+    <button id="deleteDeckBtn" class="btn btn-ghost" type="button" hidden title="Delete this deck">Delete</button>
+  </div>
+
+  <span id="statusChip" class="statuschip" hidden>
+    <span id="statusDot" class="status-dot"></span><span id="statusText">loading…</span>
+  </span>
+
+  <button id="newDeckBtn" class="btn btn-primary" type="button">+ New deck</button>
+
+  <div id="downloadMenuWrap" class="menu-wrap" hidden>
+    <button id="dlMenuBtn" class="btn btn-secondary" type="button">Download ▾</button>
+    <div id="dlMenuList" class="menu-list" hidden>
+      <a id="dlPdf" download>Download PDF</a>
+      <a id="dlPptx" download>Download PPTX</a>
+      <a id="dlExport" download>Export zip</a>
+    </div>
+  </div>
+
+  <span class="header-spacer"></span>
+
+  <a href="/admin.html" class="back">Bundle admin</a>
+
+  <div class="menu-wrap">
+    <button id="mcpBtn" class="btn btn-ghost" type="button" aria-haspopup="dialog" aria-expanded="false">MCP</button>
+    <div id="mcpPopover" class="popover" hidden role="dialog" aria-modal="false" aria-labelledby="mcpPopoverTitle">
+      <h2 id="mcpPopoverTitle">Connect your own AI</h2>
+      <p>Bring your own Claude to edit this deck by chat. Your AI reads the deck guide, edits slides, and checks previews. Changes appear here right away.</p>
+      <p>Add deckd as an MCP server. In Claude Desktop, go to Settings → Connectors → Add custom connector. With the claude CLI, run <code>claude mcp add --transport http deckd &lt;url&gt;</code>.</p>
+      <div class="mcp-url-row">
+        <code id="mcpUrl">http://127.0.0.1:8790/mcp</code>
+        <button id="mcpCopyBtn" class="btn btn-secondary" type="button">Copy</button>
+      </div>
+      <p id="mcpCopyStatus" class="mcp-copy-status" aria-live="polite"></p>
+      <p><a href="/README.md#mcp-byoai" target="_blank" rel="noopener">Full guide in the README &rarr;</a></p>
+    </div>
+  </div>
+</header>
+
+<dialog id="newDeckDialog">
+  <form id="newDeckForm">
+    <h2>New deck</h2>
+    <label>Name
+      <input type="text" id="newName" placeholder="Q3 investor update" required>
+    </label>
+    <div id="dropZone" class="dropzone">
+      <p>Drop a .md or .zip seed here, or <button type="button" id="pickFileBtn">choose a file</button></p>
+      <p id="pickedFileName" class="picked"></p>
+      <input type="file" id="newFile" accept=".md,.zip" hidden>
+    </div>
+    <div id="newDeckError" class="err"></div>
+    <div class="dialog-actions">
+      <button type="button" id="cancelNewDeck" class="btn btn-secondary">Cancel</button>
+      <button type="submit" id="createDeckBtn" class="btn btn-primary">Create deck</button>
+    </div>
+  </form>
+</dialog>
+
+<main class="workspace">
+  <div id="split" class="split">
+    <section id="editorPane" class="pane editor-pane">
+      <div class="editor-header">
+        <span id="editorDeckName"></span>
+        <span id="editorDirtyDot" class="dirty-dot" hidden title="unsaved changes"></span>
+        <span id="editorReadonlyNote" class="editor-readonly-note" hidden>read-only</span>
+        <span class="spacer"></span>
+        <label class="addimg-btn">+ image
+          <input type="file" id="imageInput" accept="image/*" hidden>
+        </label>
+        <button id="editorSaveBtn" class="btn btn-primary" type="button">Save</button>
+      </div>
+      <div id="editorConflict" class="editor-conflict" hidden>
+        <span>Changed on disk</span>
+        <button id="conflictLoadTheirs" class="btn btn-secondary" type="button">Load theirs</button>
+        <button id="conflictOverwrite" class="btn btn-secondary" type="button">Overwrite</button>
+      </div>
+      <textarea id="editorTextarea" spellcheck="false" placeholder="slides.md"></textarea>
+      <div id="editorStatus" class="editor-status"></div>
+    </section>
+
+    <div id="divider" class="divider" role="separator" aria-orientation="vertical" tabindex="0" title="Drag to resize · double-click to reset"></div>
+
+    <section id="previewPane" class="pane preview-pane">
+      <div class="preview-body">
+        <div id="shimmer" class="shimmer" hidden></div>
+        <div id="previewEmpty" class="preview-empty">
+          <p id="previewEmptyText">No preview yet — rendering starts automatically.</p>
+        </div>
+        <pre id="renderError" class="render-error" hidden></pre>
+        <iframe id="pdf" title="PDF preview" hidden></iframe>
+      </div>
+    </section>
+  </div>
+</main>
+<div id="dragOverlay"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const sessionId = new URLSearchParams(location.search).get('session');
+const initialDeck = new URLSearchParams(location.search).get('deck');
+const exampleParam = new URLSearchParams(location.search).get('example');
+
+// Three URL shapes, one workspace: '?session=<id>' (own deck), optionally
+// '&deck=<slug>' for a read-only example previewed inside that session;
+// '?example=<slug>' with no session at all, for a fully sessionless example
+// view; or neither, for the empty "nothing selected yet" state. viewMode picks
+// which REST namespace (/api/sessions/:id/... vs /api/examples/:slug/...) the
+// rest of this script talks to -- see statusEndpointFor/sourceEndpointFor/etc.
+const viewMode = sessionId !== null && sessionId !== '' ? 'session'
+  : (exampleParam !== null && exampleParam !== '' ? 'example' : 'empty');
+const activeExampleSlug = viewMode === 'example' ? exampleParam : null;
+
+// One switcher in the header covers both: which session ("Your decks", own
+// deck) and which example deck ("Examples") to preview -- see
+// switcherValue()/renderSwitcher() below.
+let selectedDeck = viewMode === 'session' ? (initialDeck !== null && initialDeck !== '' ? initialDeck : null)
+  : viewMode === 'example' ? activeExampleSlug : null;
+let shownPdfMtime = null;
+let ownSlug = null;
+let meSessions = null;
+// Loaded once via GET /api/examples (loadExamples()), independent of session
+// state -- the whole point of this fix: examples used to come from a
+// session's own status response, so they were empty with no session selected.
+let exampleSlugs = null;
+let switcherRenderKey = null;
+// Guards the auto-render-on-selection trigger below (poll()): keyed by
+// "<deck>:<sourceMtime>" so a persistently-failing render is not retried
+// forever, but a new save (new sourceMtime) or a different deck gets its own try.
+let autoRenderedFor = null;
+
+let editorDeckShown = null;
+let editorLoadedMtime = null;
+let editorDirty = false;
+let conflictContent = null;
+let conflictMtime = null;
+
+async function jsonFetch(url, opts) {
+  const r = await fetch(url, opts);
+  let body = null;
+  try { body = await r.json(); } catch { body = null; }
+  return { ok: r.ok, status: r.status, body };
+}
+
+// ---- header: session switcher, new-deck dialog, download menu, mcp popover ----
+
+function initHeader() {
+  $('deleteDeckBtn').hidden = viewMode !== 'session';
+  $('statusChip').hidden = viewMode === 'empty';
+  $('downloadMenuWrap').hidden = viewMode === 'empty';
+
+  $('sessionSwitcher').onchange = () => {
+    const v = $('sessionSwitcher').value;
+    if (v === '') return;
+    if (v.startsWith('s:')) {
+      location.href = `/?session=${encodeURIComponent(v.slice(2))}`;
+    } else if (v.startsWith('e:')) {
+      const slug = v.slice(2);
+      // Picking an example while a session is active keeps browsing inside
+      // that session (existing behavior); with no session, it's the new
+      // fully sessionless view.
+      location.href = sessionId !== null
+        ? `/?session=${encodeURIComponent(sessionId)}&deck=${encodeURIComponent(slug)}`
+        : `/?example=${encodeURIComponent(slug)}`;
+    }
+  };
+  $('deleteDeckBtn').onclick = () => void onDeleteCurrent();
+
+  $('newDeckBtn').onclick = () => openNewDeckDialog();
+  $('cancelNewDeck').onclick = () => $('newDeckDialog').close();
+  $('newDeckForm').addEventListener('submit', onCreateDeck);
+  setupDropZone();
+
+  $('dlMenuBtn').onclick = (e) => { e.stopPropagation(); $('dlMenuList').hidden = !$('dlMenuList').hidden; };
+  $('dlPdf').onclick = (e) => { e.preventDefault(); e.stopPropagation(); void handleDownload('pdf'); };
+  $('dlPptx').onclick = (e) => { e.preventDefault(); e.stopPropagation(); void handleDownload('pptx'); };
+  $('dlExport').onclick = (e) => { e.preventDefault(); e.stopPropagation(); void handleExport(); };
+
+  $('mcpBtn').onclick = (e) => {
+    e.stopPropagation();
+    const opening = $('mcpPopover').hidden;
+    $('mcpPopover').hidden = !opening;
+    $('mcpBtn').setAttribute('aria-expanded', String(opening));
+  };
+  $('mcpPopover').addEventListener('click', (e) => e.stopPropagation());
+  $('mcpCopyBtn').onclick = () => void copyMcpUrl();
+
+  document.addEventListener('click', closeHeaderMenus);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeHeaderMenus(); });
+
+  void loadSessionSwitcher();
+  void loadExamples();
+}
+
+function closeHeaderMenus() {
+  $('dlMenuList').hidden = true;
+  $('mcpPopover').hidden = true;
+  $('mcpBtn').setAttribute('aria-expanded', 'false');
+}
+
+async function copyMcpUrl() {
+  const url = $('mcpUrl').textContent;
+  const statusEl = $('mcpCopyStatus');
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(url);
+    copied = true;
+  } catch {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      copied = document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch {
+      copied = false;
+    }
+  }
+  statusEl.textContent = copied ? 'Copied' : 'Copy failed — select the text above and copy it by hand';
+  setTimeout(() => { statusEl.textContent = ''; }, 2000);
+}
+
+async function loadSessionSwitcher() {
+  const { body } = await jsonFetch('/api/me');
+  meSessions = body === null ? [] : body.sessions;
+  maybeRenderSwitcher();
+}
+
+async function loadExamples() {
+  const { body } = await jsonFetch('/api/examples');
+  exampleSlugs = body === null ? [] : body.examples;
+  maybeRenderSwitcher();
+}
+
+// 's:<sessionId>' selects a session's own deck; 'e:<slug>' selects an example
+// (sessionless, or within the current session -- see the onchange handler
+// above). selectedDeck === null (the common case) or === ownSlug both mean
+// "own deck" -- ownSlug is only known after the first poll(), so this stays
+// correct before and after that.
+function switcherValue() {
+  if (viewMode === 'session') return (selectedDeck === null || selectedDeck === ownSlug) ? `s:${sessionId}` : `e:${selectedDeck}`;
+  if (viewMode === 'example') return `e:${activeExampleSlug}`;
+  return '';
+}
+
+function maybeRenderSwitcher() {
+  const key = JSON.stringify([(meSessions ?? []).map((s) => [s.id, s.name]), exampleSlugs, switcherValue()]);
+  if (key === switcherRenderKey) return;
+  switcherRenderKey = key;
+  renderSwitcher();
+}
+
+function renderSwitcher() {
+  const select = $('sessionSwitcher');
+  select.textContent = '';
+  const sessions = meSessions ?? [];
+  if (sessions.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No decks yet';
+    select.appendChild(opt);
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  const current = switcherValue();
+  const knownSession = current.startsWith('s:') && sessions.some((s) => `s:${s.id}` === current);
+  const knownExample = current.startsWith('e:') && exampleSlugs !== null && exampleSlugs.some((d) => `e:${d}` === current);
+
+  if (!knownSession && !knownExample) {
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Select a deck…';
+    placeholder.selected = true;
+    select.appendChild(placeholder);
+  }
+
+  const yourGroup = document.createElement('optgroup');
+  yourGroup.label = 'Your decks';
+  for (const s of sessions) {
+    const opt = document.createElement('option');
+    opt.value = `s:${s.id}`;
+    opt.textContent = s.name;
+    if (knownSession && opt.value === current) opt.selected = true;
+    yourGroup.appendChild(opt);
+  }
+  select.appendChild(yourGroup);
+
+  // Examples are bundle-wide and loaded independently of any session
+  // (loadExamples(), GET /api/examples) -- always populated, session or not.
+  const exGroup = document.createElement('optgroup');
+  exGroup.label = 'Examples';
+  if (exampleSlugs === null) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'Loading…';
+    opt.disabled = true;
+    exGroup.appendChild(opt);
+  } else if (exampleSlugs.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '(none in this bundle)';
+    opt.disabled = true;
+    exGroup.appendChild(opt);
+  } else {
+    for (const slug of exampleSlugs) {
+      const opt = document.createElement('option');
+      opt.value = `e:${slug}`;
+      opt.textContent = slug;
+      if (knownExample && opt.value === current) opt.selected = true;
+      exGroup.appendChild(opt);
+    }
+  }
+  select.appendChild(exGroup);
+}
+
+async function onDeleteCurrent() {
+  if (sessionId === null) return;
+  if (!confirm('Delete this deck?')) return;
+  await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+  location.href = '/';
+}
+
+function openNewDeckDialog() {
+  $('newName').value = '';
+  $('newFile').value = '';
+  $('pickedFileName').textContent = '';
+  $('newDeckError').textContent = '';
+  $('newDeckDialog').showModal();
+  $('newName').focus();
+}
+
+function setupDropZone() {
+  const zone = $('dropZone');
+  const input = $('newFile');
+  $('pickFileBtn').onclick = () => input.click();
+  input.onchange = () => showPickedFile();
+  ['dragenter', 'dragover'].forEach((evt) => {
+    zone.addEventListener(evt, (e) => { e.preventDefault(); zone.classList.add('drag'); });
+  });
+  ['dragleave', 'drop'].forEach((evt) => {
+    zone.addEventListener(evt, (e) => { e.preventDefault(); zone.classList.remove('drag'); });
+  });
+  zone.addEventListener('drop', (e) => {
+    const file = e.dataTransfer?.files?.[0];
+    if (file === undefined) return;
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    showPickedFile();
+  });
+}
+
+function showPickedFile() {
+  const file = $('newFile').files[0];
+  $('pickedFileName').textContent = file ? file.name : '';
+}
+
+async function onCreateDeck(e) {
+  e.preventDefault();
+  const name = $('newName').value.trim();
+  const errEl = $('newDeckError');
+  errEl.textContent = '';
+  if (name === '') return;
+  const file = $('newFile').files[0];
+  try {
+    let r;
+    if (file && file.name.toLowerCase().endsWith('.zip')) {
+      r = await fetch(`/api/sessions/import?name=${encodeURIComponent(name)}`, {
+        method: 'POST', body: file,
+      });
+    } else if (file && file.name.toLowerCase().endsWith('.md')) {
+      const seedMd = await file.text();
+      r = await fetch('/api/sessions', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, seedMd }),
+      });
+    } else {
+      r = await fetch('/api/sessions', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+    }
+    if (!r.ok) { errEl.textContent = 'failed to create deck'; return; }
+    const row = await r.json().catch(() => null);
+    if (row !== null && typeof row.id === 'string') {
+      location.href = `/?session=${encodeURIComponent(row.id)}`;
+    } else {
+      location.reload();
+    }
+  } catch {
+    errEl.textContent = 'failed to create deck';
+  }
+}
+
+// ---- workspace: resizable split pane (editor | preview) ----------------
+
+const SPLIT_MIN = 240;
+
+function setupSplit() {
+  const split = $('split');
+  const editor = $('editorPane');
+  const divider = $('divider');
+  const overlay = $('dragOverlay');
+
+  function storedRatio() {
+    const raw = Number(localStorage.getItem('deckd.splitRatio'));
+    return Number.isFinite(raw) && raw > 0 && raw < 1 ? raw : 0.4;
+  }
+  function applyEditorWidth(ratio) {
+    const total = split.clientWidth - divider.offsetWidth;
+    const px = Math.max(SPLIT_MIN, Math.min(Math.round(total * ratio), total - SPLIT_MIN));
+    editor.style.flex = `0 0 ${px}px`;
+  }
+
+  applyEditorWidth(storedRatio());
+  window.addEventListener('resize', () => applyEditorWidth(storedRatio()));
+
+  let dragging = false;
+  divider.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    divider.classList.add('dragging');
+    overlay.classList.add('on');
+    divider.setPointerCapture(e.pointerId);
+  });
+  divider.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const rect = split.getBoundingClientRect();
+    const total = split.clientWidth - divider.offsetWidth;
+    const px = Math.max(SPLIT_MIN, Math.min(e.clientX - rect.left, total - SPLIT_MIN));
+    editor.style.flex = `0 0 ${px}px`;
+  });
+  function endDrag() {
+    if (!dragging) return;
+    dragging = false;
+    divider.classList.remove('dragging');
+    overlay.classList.remove('on');
+    const total = split.clientWidth - divider.offsetWidth;
+    localStorage.setItem('deckd.splitRatio', String(editor.getBoundingClientRect().width / total));
+  }
+  divider.addEventListener('pointerup', endDrag);
+  divider.addEventListener('pointercancel', endDrag);
+  divider.addEventListener('dblclick', () => {
+    localStorage.setItem('deckd.splitRatio', '0.4');
+    applyEditorWidth(0.4);
+  });
+}
+
+// ---- markdown editor pane ---------------------------------------------
+
+function setupEditor() {
+  $('editorTextarea').addEventListener('input', () => {
+    editorDirty = true;
+    updateEditorDirtyUI();
+  });
+  $('editorSaveBtn').onclick = () => void saveSource();
+  $('editorPane').addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      void saveSource();
+    }
+  });
+  $('conflictLoadTheirs').onclick = () => {
+    $('editorTextarea').value = conflictContent ?? '';
+    editorLoadedMtime = conflictMtime;
+    editorDirty = false;
+    updateEditorDirtyUI();
+    hideConflictBanner();
+  };
+  $('conflictOverwrite').onclick = () => {
+    if (conflictMtime !== null) editorLoadedMtime = conflictMtime;
+    hideConflictBanner();
+    void saveSource();
+  };
+}
+
+function updateEditorDirtyUI() {
+  $('editorDirtyDot').hidden = !editorDirty;
+}
+
+function hideConflictBanner() {
+  $('editorConflict').hidden = true;
+  conflictContent = null;
+  conflictMtime = null;
+}
+
+function showConflictBanner(content, mtime) {
+  conflictContent = content;
+  conflictMtime = mtime;
+  $('editorConflict').hidden = false;
+}
+
+// Mode-aware REST endpoint builders: everywhere else in this script that needs
+// a URL for a given deck goes through one of these, so 'session' vs 'example'
+// stays a single decision made here rather than scattered per call site.
+function statusEndpointFor(deck) {
+  if (viewMode === 'session') return `/api/sessions/${sessionId}${deck === null ? '' : `?deck=${encodeURIComponent(deck)}`}`;
+  return `/api/examples/${encodeURIComponent(deck)}`;
+}
+function sourceEndpointFor(deck) {
+  if (viewMode === 'session') return `/api/sessions/${sessionId}/source?deck=${encodeURIComponent(deck ?? '')}`;
+  return `/api/examples/${encodeURIComponent(deck)}/source`;
+}
+function pdfEndpointFor(deck, download) {
+  if (viewMode === 'session') return `/api/sessions/${sessionId}/pdf?deck=${encodeURIComponent(deck ?? '')}${download ? '&download=1' : ''}`;
+  return `/api/examples/${encodeURIComponent(deck)}/pdf${download ? '?download=1' : ''}`;
+}
+
+async function loadEditorSource() {
+  if (selectedDeck === null) return;
+  const deck = selectedDeck;
+  const { ok, body } = await jsonFetch(sourceEndpointFor(deck));
+  if (!ok || body === null) return;
+  editorDeckShown = deck;
+  editorLoadedMtime = body.mtime;
+  editorDirty = false;
+  hideConflictBanner();
+  $('editorTextarea').value = body.content;
+  updateEditorDirtyUI();
+  // A sessionless example has no "own deck" to compare against -- it is
+  // always read-only. Within a session, only the session's own deck is editable.
+  const readonly = viewMode === 'example' || (ownSlug !== null && deck !== ownSlug);
+  $('editorTextarea').readOnly = readonly;
+  $('editorReadonlyNote').hidden = !readonly;
+  $('editorSaveBtn').disabled = readonly;
+  $('imageInput').disabled = readonly;
+  $('editorDeckName').textContent = deck;
+}
+
+async function saveSource() {
+  // There is no write route for an example (GET-only, see server.ts), and
+  // saveSource always PUTs the session's OWN deck otherwise (see the server
+  // route comment); the Save button is disabled for a non-own/example deck,
+  // but a keyboard shortcut (Cmd/Ctrl+S) still reaches this function
+  // directly, so the same checks are enforced here too.
+  if (viewMode !== 'session') return;
+  if (ownSlug !== null && editorDeckShown !== ownSlug) return;
+  if (editorLoadedMtime === null) return;
+  const content = $('editorTextarea').value;
+  const { status, body } = await jsonFetch(`/api/sessions/${sessionId}/source`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ content, baseMtime: editorLoadedMtime }),
+  });
+  if (status === 200 && body !== null) {
+    editorLoadedMtime = body.mtime;
+    editorDirty = false;
+    updateEditorDirtyUI();
+    hideConflictBanner();
+    void poll();
+  } else if (status === 409 && body !== null) {
+    showConflictBanner(body.content, body.mtime);
+  }
+}
+
+async function onUploadImage() {
+  if (viewMode !== 'session') return;
+  const file = $('imageInput').files[0];
+  if (!file) return;
+  const r = await fetch(`/api/sessions/${sessionId}/assets?name=${encodeURIComponent(file.name)}`, {
+    method: 'POST', body: file,
+  });
+  $('editorStatus').textContent = r.ok ? `added images/${file.name}` : `upload failed: ${file.name}`;
+  $('imageInput').value = '';
+}
+
+// ---- empty workspace (no session selected yet) -------------------------
+
+function initEmptyWorkspace() {
+  $('editorTextarea').placeholder = 'Select a deck above, or create a new one, to start editing.';
+  $('editorTextarea').readOnly = true;
+  $('editorSaveBtn').disabled = true;
+  $('imageInput').disabled = true;
+  $('previewEmptyText').textContent = 'Select a deck above, or create a new one, to see its preview.';
+}
+
+// ---- active workspace: a session's own deck, or a sessionless example ----
+
+function initActiveWorkspace() {
+  if (viewMode === 'session') $('imageInput').onchange = () => void onUploadImage();
+  void poll();
+  setInterval(() => void poll(), 2000);
+}
+
+// ---- polling + status -------------------------------------------------
+
+function updateLinks() {
+  $('dlPdf').href = pdfEndpointFor(selectedDeck, true);
+  $('dlPptx').href = viewMode === 'session' ? `/api/sessions/${sessionId}/pptx?deck=${encodeURIComponent(selectedDeck ?? '')}` : '#';
+  $('dlExport').href = viewMode === 'session' ? `/api/sessions/${sessionId}/export` : '#';
+}
+
+// Delete removes the whole session, so it makes no sense while previewing an
+// example (which may have no session at all); export always zips the
+// session's OWN deck (see server.ts's /export route) and PPTX has no example
+// route at all (see server.ts) -- both are misleading or unavailable there.
+function updateDeckScopedUI() {
+  const isOwnDeck = viewMode === 'session' && (ownSlug === null || selectedDeck === null || selectedDeck === ownSlug);
+  $('deleteDeckBtn').hidden = !isOwnDeck;
+  $('dlExport').hidden = !isOwnDeck;
+  $('dlPptx').hidden = viewMode !== 'session';
+}
+
+function requestRender(deck, pptx) {
+  if (viewMode === 'session') return fetch(`/api/sessions/${sessionId}/render?deck=${encodeURIComponent(deck)}${pptx ? '&pptx=1' : ''}`, { method: 'POST' });
+  return fetch(`/api/examples/${encodeURIComponent(deck)}/render${pptx ? '?pptx=1' : ''}`, { method: 'POST' });
+}
+
+function downloadUrl(href) {
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+// Polls until a deck's render settles (success or failure), for a download that
+// just triggered one. Capped so a wedged renderer can't hang this forever.
+async function waitForRenderIdle(deck) {
+  for (let i = 0; i < 60; i++) {
+    const { ok, body } = await jsonFetch(statusEndpointFor(deck));
+    if (!ok || body === null) return { ok: false, output: 'server unreachable' };
+    if (!body.render.rendering && !body.render.queued) {
+      return body.render.last === null ? { ok: true, output: '' } : { ok: body.render.last.ok, output: body.render.last.output };
+    }
+    await new Promise((r) => setTimeout(r, 700));
+  }
+  return { ok: false, output: 'render timed out' };
+}
+
+function isStale(artifactMtime, sourceMtime) {
+  return artifactMtime === null || (sourceMtime !== null && artifactMtime < sourceMtime);
+}
+
+async function handleDownload(kind) {
+  if (viewMode === 'empty' || selectedDeck === null) return;
+  if (kind === 'pptx' && viewMode !== 'session') return; // no PPTX route for examples
+  const link = $(kind === 'pdf' ? 'dlPdf' : 'dlPptx');
+  const original = link.textContent;
+  const { ok, body } = await jsonFetch(statusEndpointFor(selectedDeck));
+  if (!ok || body === null) return;
+  if (isStale(kind === 'pdf' ? body.pdfMtime : body.pptxMtime, body.sourceMtime)) {
+    link.textContent = 'Rendering…';
+    await requestRender(selectedDeck, kind === 'pptx');
+    const settled = await waitForRenderIdle(selectedDeck);
+    await poll();
+    link.textContent = original;
+    if (!settled.ok) { $('dlMenuList').hidden = true; return; }
+  }
+  downloadUrl(link.href);
+  $('dlMenuList').hidden = true;
+}
+
+// exportZip (see artifacts.ts) zips the whole deck directory, PDF/PPTX
+// included, so a stale artifact would ship inside the zip too. PPTX is only
+// refreshed here if one already exists -- export never generates a first pptx
+// a deck never asked for.
+async function handleExport() {
+  if (viewMode !== 'session' || ownSlug === null) return;
+  const link = $('dlExport');
+  const original = link.textContent;
+  const { ok, body } = await jsonFetch(statusEndpointFor(ownSlug));
+  if (!ok || body === null) return;
+  const pdfStale = isStale(body.pdfMtime, body.sourceMtime);
+  const pptxStale = body.pptxMtime !== null && isStale(body.pptxMtime, body.sourceMtime);
+  if (pdfStale || pptxStale) {
+    link.textContent = 'Rendering…';
+    await requestRender(ownSlug, pptxStale);
+    const settled = await waitForRenderIdle(ownSlug);
+    await poll();
+    link.textContent = original;
+    if (!settled.ok) { $('dlMenuList').hidden = true; return; }
+  }
+  downloadUrl(link.href);
+  $('dlMenuList').hidden = true;
+}
+
+function setStatus(text, mode) {
+  $('statusText').textContent = text;
+  const dot = $('statusDot');
+  dot.classList.remove('working', 'broken');
+  if (mode === 'working') dot.classList.add('working');
+  if (mode === 'broken') dot.classList.add('broken');
+}
+
+async function poll() {
+  const { ok, body } = await jsonFetch(statusEndpointFor(selectedDeck));
+  if (!ok || body === null) { setStatus('server unreachable', 'broken'); return; }
+
+  if (viewMode === 'session') {
+    ownSlug = body.session.slug;
+    const decks = body.decks;
+    if (selectedDeck === null || !decks.includes(selectedDeck)) {
+      selectedDeck = decks.includes(body.session.slug) ? body.session.slug : (decks[0] ?? null);
+    }
+  }
+  updateLinks();
+  updateDeckScopedUI();
+  maybeRenderSwitcher();
+
+  // Render/log buttons are gone: a stale or missing PDF for the deck now on
+  // screen is rendered automatically, once per (deck, sourceMtime) pair so a
+  // persistently failing render is not retried on every 2s poll tick.
+  const pdfStale = isStale(body.pdfMtime, body.sourceMtime);
+  const autoKey = `${selectedDeck}:${body.sourceMtime}`;
+  if (pdfStale && !body.render.rendering && !body.render.queued && autoRenderedFor !== autoKey) {
+    autoRenderedFor = autoKey;
+    void requestRender(selectedDeck, false);
+  }
+
+  if (body.render.rendering) {
+    setStatus('rendering…', 'working');
+  } else if (body.render.queued) {
+    setStatus('queued for render…', 'working');
+  } else if (body.render.last !== null && !body.render.last.ok) {
+    setStatus('render failed — see below', 'broken');
+  } else if (body.pdfMtime !== null) {
+    const when = new Date(body.pdfMtime).toLocaleTimeString();
+    setStatus(`pdf @ ${when}`, 'idle');
+  } else {
+    setStatus('not rendered yet', 'idle');
+  }
+  $('shimmer').hidden = !body.render.rendering;
+
+  const hasError = body.render.last !== null && !body.render.last.ok;
+  $('renderError').hidden = !hasError;
+  if (hasError) {
+    $('renderError').textContent = body.render.last.output || '(no output)';
+    $('previewEmpty').hidden = true;
+    $('pdf').hidden = true;
+  } else {
+    $('previewEmpty').hidden = body.pdfMtime !== null;
+    $('pdf').hidden = body.pdfMtime === null;
+    if (body.pdfMtime !== null && body.pdfMtime !== shownPdfMtime && !body.render.rendering) {
+      shownPdfMtime = body.pdfMtime;
+      $('pdf').src = `${pdfEndpointFor(selectedDeck, false)}${viewMode === 'session' ? '&' : '?'}v=${body.pdfMtime}`;
+    }
+  }
+
+  // Never clobbers a dirty draft; otherwise loads the newly-selected deck, or
+  // silently picks up an on-disk edit once idle.
+  if (selectedDeck !== null && !editorDirty) {
+    const stale = editorLoadedMtime !== null && body.sourceMtime !== null
+      && Math.abs(body.sourceMtime - editorLoadedMtime) > 1;
+    if (editorDeckShown !== selectedDeck || stale) void loadEditorSource();
+  }
+}
+
+initHeader();
+setupSplit();
+setupEditor();
+if (viewMode === 'empty') {
+  initEmptyWorkspace();
+} else {
+  initActiveWorkspace();
+}
+</script>
+</body>
+</html>

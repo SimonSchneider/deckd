@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>deckd bundle admin</title>
+<style>
+  :root { color-scheme: light; --ink: #1c1c1c; --paper: #f7f5f2; --panel: #fff; --border: #e5e1da; --green: #1f3a34; --lime: #e8ff8a; --muted: #6f6b64; --error: #b3402e; --ok: #1f6f4a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; background: var(--paper); color: var(--ink); }
+  header { background: var(--green); color: #fff; padding: 14px 20px; font-weight: 650; }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 20px 60px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 16px; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; }
+  input[type=file] { display: block; margin: 12px 0; }
+  button { appearance: none; border-radius: 8px; border: 1px solid transparent; padding: 7px 14px; font: inherit; font-weight: 600; cursor: pointer; background: var(--lime); color: var(--green); }
+  button:disabled { cursor: not-allowed; opacity: .5; }
+  pre#result { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: #14161a; color: #d9dde2; border-radius: 8px; padding: 12px; margin: 12px 0 0; min-height: 1.2em; }
+  #result.err { color: var(--error); background: #fbe9e6; }
+  #result.ok { color: var(--ok); background: #e6f3ec; }
+  a.back { color: var(--muted); text-decoration: none; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>deckd bundle admin</header>
+<main>
+  <p><a class="back" href="/">&larr; Decks</a></p>
+  <section>
+    <h1>Current bundle</h1>
+    <dl id="summary"></dl>
+    <p><a id="downloadLink" href="/api/bundle/download">Download current bundle (.zip)</a></p>
+  </section>
+  <section>
+    <h1>Upload a new bundle</h1>
+    <p>A zip whose root contains <code>deckd.json</code>. Replaces the active bundle for every session immediately, no restart.</p>
+    <input type="file" id="zipInput" accept=".zip">
+    <button id="uploadBtn" type="button" disabled>Upload</button>
+    <pre id="result"></pre>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+function renderSummary(body) {
+  const dl = $('summary');
+  dl.textContent = '';
+  const rows = [
+    ['theme', body.manifest.theme],
+    ['assets', body.manifest.assets ?? '(none)'],
+    ['examples', body.manifest.examples ?? '(none)'],
+    ['guide', body.manifest.guide ?? '(none)'],
+    ['files', String(body.fileCount)],
+    ['example decks', String(body.exampleCount)],
+    ['uploaded', new Date(body.uploadedAt).toLocaleString()],
+  ];
+  for (const [k, v] of rows) {
+    const dt = document.createElement('dt');
+    dt.textContent = k;
+    const dd = document.createElement('dd');
+    dd.textContent = v;
+    dl.appendChild(dt);
+    dl.appendChild(dd);
+  }
+}
+
+async function loadSummary() {
+  const r = await fetch('/api/bundle');
+  if (!r.ok) return;
+  renderSummary(await r.json());
+}
+
+$('zipInput').onchange = () => {
+  $('uploadBtn').disabled = $('zipInput').files.length === 0;
+  $('result').textContent = '';
+  $('result').className = '';
+};
+
+$('uploadBtn').onclick = async () => {
+  const file = $('zipInput').files[0];
+  if (!file) return;
+  $('uploadBtn').disabled = true;
+  $('result').className = '';
+  $('result').textContent = 'Uploading…';
+  try {
+    const r = await fetch('/api/bundle', { method: 'PUT', body: file });
+    const body = await r.json().catch(() => null);
+    if (r.ok && body !== null) {
+      $('result').className = 'ok';
+      $('result').textContent = JSON.stringify(body, null, 2);
+      renderSummary(body);
+    } else {
+      $('result').className = 'err';
+      $('result').textContent = body && body.error ? body.error : `upload failed (${r.status})`;
+    }
+  } catch (e) {
+    $('result').className = 'err';
+    $('result').textContent = String(e);
+  } finally {
+    $('uploadBtn').disabled = $('zipInput').files.length === 0;
+  }
+};
+
+void loadSummary();
+</script>
+</body>
+</html>

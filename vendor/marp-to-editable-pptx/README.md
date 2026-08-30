@@ -1,0 +1,389 @@
+> **Vendored into deckd.** This is a build-output snapshot of
+> [KatsuYuzu/marp-to-editable-pptx](https://github.com/KatsuYuzu/marp-to-editable-pptx)
+> (`package.json` at vendor time: version 1.3.0), consumed for its native-pptx
+> export pipeline only -- the VS Code extension itself is not used. `lib/native-pptx.cjs`
+> is the esbuild output of `npm run build` against that upstream commit (bundling
+> `src/native-pptx/index.ts` and friends; `puppeteer-core`/`pptxgenjs` stay external
+> and resolve from deckd's own `node_modules`), committed here rather than rebuilt at
+> install time -- see `src/host-render.ts`'s pptx export pipeline for how deckd drives
+> it. The `package.json` at this directory's root is not upstream's own -- it exists
+> only to mark this subtree `"type": "commonjs"`, since `src/native-pptx/tools/gen-pptx.js`
+> uses `require()` and deckd's own root `package.json` is `"type": "module"` (Node
+> otherwise treats a bare `.js` file as ESM under the nearest ancestor `package.json`
+> that says so). Everything below this note is upstream's own README, kept for
+> attribution and license context; deckd does not use the VS Code command it
+> describes.
+>
+> Copied into deckd from the author's internal presentation toolkit, which
+> vendored it in turn from the upstream project above.
+>
+> **Local deviations from that source**, applied directly to `lib/native-pptx.cjs`
+> since deckd owns this vendored copy and does not rebuild it from upstream's
+> TypeScript source:
+>
+> - `generateNativePptx()`'s `puppeteer.launch()` call no longer passes `--no-sandbox`
+>   or `--disable-setuid-sandbox`. Those flags run Chrome without its OS-level sandbox
+>   and were undisclosed here; deckd doesn't run Chrome as root, so the sandbox works,
+>   and removing the flags matches the posture `checkLayout` already uses for its own
+>   Chrome invocation (`src/host-render.ts`). An environment where this now fails to
+>   launch needs a real fix (e.g. running as a non-root user), not a silent
+>   sandbox-disabled fallback.
+> - `generateNativePptx()` logs the launched Chrome's pid (`[deckd] chrome-pid: <pid>`)
+>   right after `puppeteer.launch()` resolves. `@puppeteer/browsers` launches Chrome
+>   with `detached: true` on non-Windows platforms with no supported way to override
+>   that through `puppeteer-core`'s public `launch()` API (verified against
+>   `puppeteer-core` 24.43.1: `BrowserLauncher.launch()` hardcodes the options it
+>   forwards to `@puppeteer/browsers`' `launch()` and never passes through a
+>   caller-supplied `detached`) -- so Chrome always becomes the leader of its own,
+>   separate process group, one level detached from gen-pptx.js's own process group.
+>   `src/host-render.ts`'s timeout kill only reaches gen-pptx.js's group; without this
+>   pid logged out, a killed gen-pptx.js run would leave Chrome running forever. See
+>   `runProcess` in `src/host-render.ts` for the matching read side.
+
+---
+
+# Marp to Editable PPTX
+
+[![Install](https://img.shields.io/badge/VS%20Code-Install-007ACC?logo=visual-studio-code)](https://marketplace.visualstudio.com/items?itemName=KatsuYuzu.marp-to-editable-pptx)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+> Export your [Marp](https://marp.app/) Markdown presentations to **truly editable PowerPoint files** — no LibreOffice, no extra software.
+
+Each text box, image, and shape is placed as an individual native PowerPoint object, so you can freely move, resize, and restyle content in PowerPoint after export.
+
+---
+
+## Why this extension?
+
+The official Marp toolchain offers two PPTX export modes, both with limitations:
+
+| | Marp: PPTX (screenshot) | Marp: PPTX (LibreOffice) | **This extension** |
+|---|:---:|:---:|:---:|
+| Text/shapes are editable | ❌ flat image | ⚠️ messy PDF-converted objects | ✅ clean native objects |
+| Requires LibreOffice | — | ❌ must install | ✅ not needed |
+| Works in enterprise environments | ✅ | ❌ | ✅ |
+| Layout faithfulness | ✅ | ⚠️ | ⚠️ |
+
+The LibreOffice-based export works by converting the slide to a PDF and then importing it into PowerPoint via LibreOffice. This results in cluttered, hard-to-edit objects. More importantly, **many enterprise users cannot install LibreOffice** due to IT policies.
+
+This extension uses a different approach: it reads the browser-rendered DOM directly, extracting the exact position, font, color, and content of every element, and builds a native PPTX from scratch.
+
+> **Layout faithfulness note:** Text may look slightly different or wrap at a different point in PowerPoint than in the browser. This happens because browsers and PowerPoint use separate text rendering engines with different character spacing and line-break calculations — even with the same font. The effect is strongest when a Marp theme uses **web fonts** (e.g. from Google Fonts): PowerPoint substitutes a system font, changing character widths enough to shift a line break and cascade every element below it. Using system fonts in your theme reduces the risk, but a pixel-perfect match is not guaranteed.
+
+---
+
+## Requirements
+
+- **Google Chrome** or **Microsoft Edge** — that's it. No LibreOffice, no extra runtime.
+
+---
+
+## Quick Start
+
+1. Open a Marp Markdown file (`.md`) in VS Code
+2. Press `F1` and run **Marp: Export to Editable PPTX**
+3. Choose a save location in the dialog
+4. Open the generated `.pptx` in PowerPoint — every element is editable
+
+---
+
+## Custom themes
+
+The export **mirrors the Marp preview in VS Code**: it reads the same [Marp for VS Code](https://marketplace.visualstudio.com/items?itemName=marp-team.marp-vscode) settings, so whatever you see in the preview is what you get in the `.pptx`.
+
+Register a custom theme with the `markdown.marp.themes` setting — the same setting the preview uses — in `.vscode/settings.json`:
+
+```jsonc
+{
+  "markdown.marp.themes": ["./custom-demo.css"]
+}
+```
+
+A project config file also works, for CLI-style setups — put a `.marprc.yml` (or `marp.config.*`) at your workspace root:
+
+```yaml
+# .marprc.yml
+themeSet: ./custom-demo.css
+```
+
+Both are supported; when both are present the VS Code settings win (so the export keeps matching the preview). Local paths and remote `https://…` URLs are both accepted. Then select the theme with the `theme:` directive in your Markdown front matter. The theme CSS needs a `/* @theme name */` header:
+
+```css
+/* @theme custom-demo */
+@import 'default';
+section { background-color: #1e2a38; color: #e8eef5; }
+h1, h2 { color: #4fc3f7; }
+```
+
+Preview-driving settings are honored too, so math, line breaks, and typography match: `markdown.marp.mathTypesetting`, `markdown.marp.breaks`, `markdown.marp.html`, and `markdown.preview.typographer`.
+
+> **Tip:** Registering the theme through `markdown.marp.themes` also makes it show up in the Marp preview, keeping the preview and the export in sync. `.marprc.yml` is read for export but, like the Marp for VS Code preview, does not affect the preview itself.
+
+### Styling a single slide
+
+A theme applies to the whole deck; there is no per-slide *theme*. To give one slide a different look, define a class in your theme and apply it with the per-slide local directive `<!-- _class: accent -->`:
+
+```css
+section.accent { background-color: #fff3e0; color: #3e2723; }
+section.accent h1, section.accent h2 { color: #e65100; }
+```
+
+The exported PPTX below uses `custom-demo` deck-wide, with the second slide opting into `_class: accent`. Left is the **Marp HTML**, right is the **exported PPTX** — each element stays a native, editable PowerPoint object.
+
+<table>
+<tr>
+<td><img src="docs/images/theme-html-1.png" alt="Marp HTML — dark custom theme"></td>
+<td><img src="docs/images/theme-pptx-1.png" alt="Exported PPTX — dark custom theme"></td>
+</tr>
+<tr>
+<td><img src="docs/images/theme-html-2.png" alt="Marp HTML — per-slide accent class"></td>
+<td><img src="docs/images/theme-pptx-2.png" alt="Exported PPTX — per-slide accent class"></td>
+</tr>
+</table>
+
+> Reproduce it from [`docs/theme-demo/`](docs/theme-demo/): `npx marp docs/theme-demo/deck.md --theme-set docs/theme-demo/custom-demo.css --html --allow-local-files -o docs/theme-demo/deck.html`, then export the deck in VS Code.
+
+---
+
+## Slide Quality
+
+Each image shows **Marp HTML on the left** and **the exported PPTX on the right**.  
+All slides are from the fixture deck [`src/native-pptx/test-fixtures/pptx-export.md`](src/native-pptx/test-fixtures/pptx-export.md) and are automatically updated by CI on every release.
+
+**[⬇ Download sample PPTX](https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/test-output.pptx)** — the latest generated file, updated automatically on every release.
+
+<!-- Screenshot comparison table — auto-updated by the Update Screenshots workflow -->
+
+<details open>
+<summary>All slide comparisons</summary>
+
+<table>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-001.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-002.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-003.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-004.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-005.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-006.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-007.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-008.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-009.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-010.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-011.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-012.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-013.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-014.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-015.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-016.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-017.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-018.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-019.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-020.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-021.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-022.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-023.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-024.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-025.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-026.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-027.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-028.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-029.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-030.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-031.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-032.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-033.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-034.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-035.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-036.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-037.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-038.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-039.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-040.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-041.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-042.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-043.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-044.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-045.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-046.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-047.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-048.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-049.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-050.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-051.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-052.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-053.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-054.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-055.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-056.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-057.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-058.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-059.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-060.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-061.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-062.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-063.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-064.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-065.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-066.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-067.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-068.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-069.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-070.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-071.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-072.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-073.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-074.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-075.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-076.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-077.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-078.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-079.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-080.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-081.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-082.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-083.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-084.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-085.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-086.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-087.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-088.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-089.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-090.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-091.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-092.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-093.png"></td>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-094.png"></td>
+</tr>
+<tr>
+<td><img src="https://KatsuYuzu.github.io/marp-to-editable-pptx/screenshots/compare-095.png"></td>
+</tr>
+</table>
+
+</details>
+
+---
+
+## How it works
+
+1. Converts your Markdown to HTML using [@marp-team/marp-cli](https://github.com/marp-team/marp-cli)
+2. Launches a headless Chrome/Edge to render each slide at full resolution
+3. Extracts every element's exact position, font, color, and content via `getComputedStyle()` and `getBoundingClientRect()`
+4. Assembles an editable `.pptx` where each element is a native PowerPoint shape
+
+Because it reads the browser's computed layout — not the Markdown source or CSS — it works correctly with any Marp theme, custom CSS, and `html: true` content. Element positions, sizes, colors, and images are reproduced faithfully; see the [Layout faithfulness note](#why-this-extension) above for the known typographic limitation.
+
+---
+
+## For contributors
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the fix workflow (ADR log, fixture slides, visual comparison), commit style, and PR rules.
+
+### AI-assisted development
+
+This repository ships with [GitHub Copilot](https://github.com/features/copilot) customizations:
+
+- **Skill** — `.github/skills/marp-pptx-visual-diff/SKILL.md`: step-by-step guide for the visual fidelity improvement loop
+- **Instructions** — `.github/instructions/marp-editable-pptx.instructions.md`: coding conventions, architecture rules, and degression-prevention checklist
+
+### Architecture & decisions
+
+[`src/native-pptx/README.md`](src/native-pptx/README.md) contains the full architecture description and an ADR (Architecture Decision Record) log that documents every significant design decision and past bug fix.
+
+---
+
+## License
+
+[MIT](LICENSE)
+
