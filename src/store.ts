@@ -4,7 +4,8 @@
 // replace better-sqlite3, a native addon that needs a prebuilt binary per
 // platform/Node ABI.
 import { DatabaseSync } from "node:sqlite";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 // "sandbox" is a sandboxd-backed session (app clone + container); "local" is a
 // plain directory on disk with no sandboxd involvement at all (BYOAI/MCP path).
@@ -50,6 +51,11 @@ export function addKindColumn(db: DatabaseSync): void {
 export class SessionStore {
   private db: DatabaseSync;
   constructor(dbPath: string) {
+    // DatabaseSync opens a raw file handle and does not create missing parent
+    // directories itself -- a fresh clone's default dbPath (<dataDir>/deckd.sqlite3,
+    // see config.ts) fails with ERR_SQLITE_ERROR before dataDir has ever been made.
+    // dirname(":memory:") is ".", which always exists, so this is a no-op for it.
+    mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath);
     this.db.exec(`CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY, userEmail TEXT NOT NULL, name TEXT NOT NULL, slug TEXT NOT NULL,

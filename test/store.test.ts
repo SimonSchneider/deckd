@@ -16,6 +16,13 @@ describe("SessionStore", () => {
     expect(s.get("s1")?.slug).toBe("my-deck");
     expect(s.get("nope")).toBeNull();
   });
+  it("opens the db when its parent directory doesn't exist yet", () => {
+    const dir = mkdtempSync(join(tmpdir(), "deckd-store-missing-dir-"));
+    const dbPath = join(dir, "nested", "sub", "deckd.sqlite3");
+    const s = new SessionStore(dbPath);
+    s.create(base);
+    expect(s.get("s1")?.slug).toBe("my-deck");
+  });
   it("defaults kind to sandbox, but honors an explicit kind", () => {
     const s = mk();
     s.create(base);
