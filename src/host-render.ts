@@ -720,8 +720,8 @@ export function createHostRenderer(opts: HostRendererOptions): HostRenderer {
 
     let fixOutput: string;
     try {
-      const { tablesFixed } = await fixPptxTables(pptxAbsPath, deadlineAt);
-      fixOutput = `restyled ${tablesFixed} table(s)`;
+      const { tablesFixed, orphanedContentTypeOverridesRemoved } = await fixPptxTables(pptxAbsPath, deadlineAt);
+      fixOutput = `restyled ${tablesFixed} table(s), pruned ${orphanedContentTypeOverridesRemoved} orphaned content-type override(s)`;
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
       return { code: -1, output: `${marpResult.output}\n${genPptxResult.output}\ntable fix failed: ${message}`.slice(-OUTPUT_LIMIT) };

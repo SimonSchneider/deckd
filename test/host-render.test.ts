@@ -1688,6 +1688,11 @@ describe.skipIf(!E2E_AVAILABLE)("createHostRenderer.render e2e canary (real marp
   );
 });
 
+// Two slides sharing marp-cli's single theme (and therefore, downstream, pptxgenjs's
+// single slide master) -- one slide alone can't exercise the exporter's
+// Content_Types bug (github.com/gitbrent/PptxGenJS/issues/1449): its Override loop
+// runs once per slide, so it only diverges from the real (single) master count once
+// there's more than one slide.
 const E2E_TABLE_SLIDES_MD = `---
 marp: true
 theme: sample
@@ -1699,6 +1704,12 @@ theme: sample
 | --- | --- |
 | Concrete | High |
 | Timber | Low |
+
+---
+
+# Second slide
+
+Shares the first slide's master.
 `;
 
 // E2E CANARY: the only test in this file that runs the real pptx pipeline end to
@@ -1748,6 +1759,24 @@ describe.skipIf(!E2E_AVAILABLE)("createHostRenderer.render e2e canary (real marp
       expect(tableSlide).toContain('<a:lnL w="12700"><a:noFill/></a:lnL>');
       expect(tableSlide).toContain("1D1C30");
       expect(tableSlide).not.toContain('h="0"');
+
+      // OPC-structure canary (github.com/gitbrent/PptxGenJS/issues/1449): with two
+      // slides sharing one master, pptxgenjs's own Content_Types generator declares
+      // an Override for a slideMaster2.xml that's never written. Every declared
+      // Override must resolve to a real, non-directory zip entry -- this is the
+      // actual defect that made an exported pptx "look broken" (PowerPoint treats
+      // the mismatch as a corrupt package and silently repairs the file on open),
+      // not the zip's directory entries or STORE-vs-DEFLATE compression, both of
+      // which are pptxgenjs's normal, harmless output shape.
+      const contentTypesXml = await zip.file("[Content_Types].xml")?.async("string");
+      expect(contentTypesXml).toBeDefined();
+      if (contentTypesXml === undefined) throw new Error("unreachable: asserted above");
+      const actualPartNames = new Set(Object.entries(zip.files).filter(([, entry]) => !entry.dir).map(([n]) => n));
+      const overriddenPartNames = [...contentTypesXml.matchAll(/PartName="([^"]+)"/g)].map((m) => (m[1] ?? "").replace(/^\//, ""));
+      expect(overriddenPartNames.length).toBeGreaterThan(0);
+      for (const partName of overriddenPartNames) {
+        expect(actualPartNames.has(partName)).toBe(true);
+      }
     },
     120_000,
   );

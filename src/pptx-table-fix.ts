@@ -9,6 +9,18 @@ import JSZip from "jszip";
 // grows the table's graphic frame to the summed row heights it applies, so a table
 // isn't left declared at PowerPoint's 1in default. TypeScript port of the
 // presentations repo's tools/fix_pptx_tables.py (spec decision 1: zero Python).
+//
+// Also prunes orphaned [Content_Types].xml Override entries left by pptxgenjs (the
+// exporter's underlying pptx writer, vendored via vendor/marp-to-editable-pptx):
+// its Content_Types generator loops over the slide collection instead of the slide
+// master collection, so an N-slide deck sharing one master declares Override parts
+// for slideMaster1.xml through slideMasterN.xml even though only slideMaster1.xml is
+// ever written (github.com/gitbrent/PptxGenJS/issues/1449). PowerPoint's OPC reader
+// treats the declared-vs-actual mismatch as a corrupt package and silently repairs
+// the file on open -- which is what "the exported pptx looks broken" turned out to
+// be. This step is generic (strips any Override whose PartName has no matching zip
+// entry) rather than special-cased to slideMaster, since the same shape of bug could
+// recur for any other part type.
 
 const INK = "1D1C30";
 const GREY_LIGHT = "EAEAF1";
@@ -16,6 +28,9 @@ const GREY_LIGHT = "EAEAF1";
 const ROW_HEIGHT_EMU = 411480;
 
 const SLIDE_XML_RE = /^ppt\/slides\/slide\d+\.xml$/;
+const CONTENT_TYPES_PATH = "[Content_Types].xml";
+const OVERRIDE_TAG_RE = /<Override\b[^>]*\/>/g;
+const PART_NAME_RE = /PartName="([^"]+)"/;
 
 function noLineXml(tag: string): string {
   return `<a:${tag} w="12700"><a:noFill/></a:${tag}>`;
@@ -88,8 +103,34 @@ export function fixSlideXml(xml: string): FixSlideResult {
   return { xml: result, tableCount: tables.length };
 }
 
+export interface PruneContentTypesResult {
+  xml: string;
+  removed: number;
+}
+
+// Strips any [Content_Types].xml <Override PartName="..."/> whose part isn't among
+// `actualPartNames` (zip entry names, no leading slash, directories excluded).
+// PartName values are package-root-relative ("/ppt/slideMasters/slideMaster2.xml"),
+// so the leading slash is stripped before the lookup.
+export function pruneOrphanedContentTypeOverrides(
+  contentTypesXml: string,
+  actualPartNames: ReadonlySet<string>,
+): PruneContentTypesResult {
+  let removed = 0;
+  const xml = contentTypesXml.replace(OVERRIDE_TAG_RE, (tag) => {
+    const match = PART_NAME_RE.exec(tag);
+    if (match === null) return tag;
+    const partName = (match[1] ?? "").replace(/^\//, "");
+    if (actualPartNames.has(partName)) return tag;
+    removed += 1;
+    return "";
+  });
+  return { xml, removed };
+}
+
 export interface FixPptxTablesResult {
   tablesFixed: number;
+  orphanedContentTypeOverridesRemoved: number;
 }
 
 async function fixPptxTablesInner(pptxPath: string): Promise<FixPptxTablesResult> {
@@ -107,6 +148,22 @@ async function fixPptxTablesInner(pptxPath: string): Promise<FixPptxTablesResult
     if (tableCount > 0) zip.file(name, newXml);
   }
 
+  let orphanedContentTypeOverridesRemoved = 0;
+  const contentTypesFile = zip.file(CONTENT_TYPES_PATH);
+  if (contentTypesFile !== null) {
+    const actualPartNames = new Set(
+      Object.entries(zip.files)
+        .filter(([, entry]) => !entry.dir)
+        .map(([name]) => name),
+    );
+    const contentTypesXml = await contentTypesFile.async("string");
+    const { xml: prunedXml, removed } = pruneOrphanedContentTypeOverrides(contentTypesXml, actualPartNames);
+    if (removed > 0) {
+      zip.file(CONTENT_TYPES_PATH, prunedXml);
+      orphanedContentTypeOverridesRemoved = removed;
+    }
+  }
+
   const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
   const tmpPath = `${pptxPath}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmpPath, buffer);
@@ -117,7 +174,7 @@ async function fixPptxTablesInner(pptxPath: string): Promise<FixPptxTablesResult
     throw e;
   }
 
-  return { tablesFixed };
+  return { tablesFixed, orphanedContentTypeOverridesRemoved };
 }
 
 // Rewrites every ppt/slides/slideN.xml entry in the pptx at `pptxPath` in place,
