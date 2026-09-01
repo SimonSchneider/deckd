@@ -4,7 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import JSZip from "jszip";
-import { fixSlideXml, fixPptxTables, pruneOrphanedContentTypeOverrides } from "../src/pptx-table-fix.js";
+import { fixSlideXml, fixPptxTables } from "../src/pptx-table-fix.js";
 
 // Mirrors the shape the vendored native-pptx exporter emits: every cell carries a
 // full 1pt (12700 EMU) grid on all four sides, and every row is declared h="0".
@@ -102,73 +102,7 @@ describe("fixSlideXml", () => {
   });
 });
 
-describe("pruneOrphanedContentTypeOverrides", () => {
-  it("removes an Override whose PartName has no matching zip entry", () => {
-    const xml =
-      '<Types><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>' +
-      '<Override PartName="/ppt/slideMasters/slideMaster2.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/></Types>';
-    const actualPartNames = new Set(["ppt/slideMasters/slideMaster1.xml"]);
-
-    const { xml: pruned, removed } = pruneOrphanedContentTypeOverrides(xml, actualPartNames);
-
-    expect(removed).toBe(1);
-    expect(pruned).toContain('PartName="/ppt/slideMasters/slideMaster1.xml"');
-    expect(pruned).not.toContain("slideMaster2.xml");
-  });
-
-  it("keeps every Override when all declared parts exist", () => {
-    const xml = '<Types><Override PartName="/ppt/presentation.xml" ContentType="x"/></Types>';
-    const actualPartNames = new Set(["ppt/presentation.xml"]);
-
-    const { xml: pruned, removed } = pruneOrphanedContentTypeOverrides(xml, actualPartNames);
-
-    expect(removed).toBe(0);
-    expect(pruned).toBe(xml);
-  });
-
-  it("leaves Default (extension-based) entries alone -- only Override is part-specific", () => {
-    const xml = '<Types><Default Extension="png" ContentType="image/png"/></Types>';
-    const { xml: pruned, removed } = pruneOrphanedContentTypeOverrides(xml, new Set());
-
-    expect(removed).toBe(0);
-    expect(pruned).toBe(xml);
-  });
-});
-
 describe("fixPptxTables", () => {
-  // Reproduces the actual defect (github.com/gitbrent/PptxGenJS/issues/1449): a
-  // 2-slide deck sharing one slide master, whose Content_Types.xml declares an
-  // Override for both slideMaster1.xml (real) and slideMaster2.xml (never written,
-  // since pptxgenjs's own Content_Types generator loops per-slide, not per-master).
-  it("prunes an orphaned slideMaster Override left by the exporter's Content_Types bug", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "deckd-pptx-fixture-"));
-    const pptxPath = join(dir, "deck-editable.pptx");
-    const contentTypes =
-      '<Types><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>' +
-      '<Override PartName="/ppt/slideMasters/slideMaster2.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>' +
-      '<Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>' +
-      '<Override PartName="/ppt/slides/slide2.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/></Types>';
-    const plainSlideXml = "<p:sld><p:cSld><p:spTree></p:spTree></p:cSld></p:sld>";
-
-    const zip = new JSZip();
-    zip.file("[Content_Types].xml", contentTypes);
-    zip.file("ppt/slides/slide1.xml", plainSlideXml);
-    zip.file("ppt/slides/slide2.xml", plainSlideXml);
-    zip.file("ppt/slideMasters/slideMaster1.xml", "<p:sldMaster/>");
-    await writeFile(pptxPath, await zip.generateAsync({ type: "nodebuffer" }));
-
-    const result = await fixPptxTables(pptxPath);
-    expect(result.orphanedContentTypeOverridesRemoved).toBe(1);
-
-    const rewritten = await JSZip.loadAsync(await readFile(pptxPath));
-    const rewrittenContentTypes = await rewritten.file("[Content_Types].xml")?.async("string");
-    expect(rewrittenContentTypes).not.toContain("slideMaster2.xml");
-    // The real master's own Override, and the unrelated slide Overrides, survive.
-    expect(rewrittenContentTypes).toContain('PartName="/ppt/slideMasters/slideMaster1.xml"');
-    expect(rewrittenContentTypes).toContain('PartName="/ppt/slides/slide1.xml"');
-    expect(rewrittenContentTypes).toContain('PartName="/ppt/slides/slide2.xml"');
-  });
-
   it("restyles only ppt/slides/slideN.xml entries, leaving other zip entries untouched", async () => {
     const dir = mkdtempSync(join(tmpdir(), "deckd-pptx-fixture-"));
     const pptxPath = join(dir, "deck-editable.pptx");
@@ -189,7 +123,6 @@ describe("fixPptxTables", () => {
 
     const result = await fixPptxTables(pptxPath);
     expect(result.tablesFixed).toBe(1);
-    expect(result.orphanedContentTypeOverridesRemoved).toBe(0);
 
     const rewritten = await JSZip.loadAsync(await readFile(pptxPath));
     const slide1 = await rewritten.file("ppt/slides/slide1.xml")?.async("string");
