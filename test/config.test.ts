@@ -12,7 +12,7 @@ describe("loadConfig", () => {
     expect(cfg.bundleDir).toBe("/tmp/deckd-test-data/bundle");
     expect(cfg.scratchDir).toBe("/tmp/deckd-test-data/render-scratch");
     expect(cfg.canonicalCacheDir).toBe("/tmp/deckd-test-data/canonical-cache");
-    expect(cfg.localSessionsRoot).toBe("/tmp/deckd-test-data/local-sessions");
+    expect(cfg.localDecksRoot).toBe("/tmp/deckd-test-data/local-decks");
     expect(cfg.chromePath).toBe("/tmp/fake-chrome");
   });
   it("falls back to cwd/data when DECKD_DATA_DIR is unset", () => {
@@ -20,21 +20,21 @@ describe("loadConfig", () => {
     expect(cfg.bundleDir).toBe(join(process.cwd(), "data", "bundle"));
     expect(cfg.dbPath).toBe(join(process.cwd(), "data", "deckd.sqlite3"));
   });
-  it("honors DECKD_DB, DECKD_BUNDLE_DIR, DECKD_SCRATCH_DIR, DECKD_CANONICAL_CACHE_DIR and DECKD_LOCAL_SESSIONS_DIR overrides", () => {
+  it("honors DECKD_DB, DECKD_BUNDLE_DIR, DECKD_SCRATCH_DIR, DECKD_CANONICAL_CACHE_DIR and DECKD_LOCAL_DECKS_DIR overrides", () => {
     const cfg = loadConfig({
       DECKD_DATA_DIR: "/tmp/deckd-test-data",
       DECKD_DB: "/tmp/other-deckd.sqlite3",
       DECKD_BUNDLE_DIR: "/tmp/other-bundle",
       DECKD_SCRATCH_DIR: "/tmp/other-scratch",
       DECKD_CANONICAL_CACHE_DIR: "/tmp/other-cache",
-      DECKD_LOCAL_SESSIONS_DIR: "/tmp/other-local",
+      DECKD_LOCAL_DECKS_DIR: "/tmp/other-local",
       DECKD_CHROME_PATH: "/tmp/fake-chrome",
     });
     expect(cfg.dbPath).toBe("/tmp/other-deckd.sqlite3");
     expect(cfg.bundleDir).toBe("/tmp/other-bundle");
     expect(cfg.scratchDir).toBe("/tmp/other-scratch");
     expect(cfg.canonicalCacheDir).toBe("/tmp/other-cache");
-    expect(cfg.localSessionsRoot).toBe("/tmp/other-local");
+    expect(cfg.localDecksRoot).toBe("/tmp/other-local");
   });
 
   describe("chromePath resolution", () => {

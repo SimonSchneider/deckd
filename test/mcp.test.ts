@@ -10,8 +10,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { buildApp } from "../src/server.js";
 import { mountMcp } from "../src/mcp.js";
-import { SessionStore } from "../src/store.js";
-import { SessionService } from "../src/sessions.js";
+import { DeckStore } from "../src/store.js";
+import { DeckService } from "../src/decks.js";
 import { RenderQueue, type RenderJob } from "../src/render.js";
 import type {
   HostRenderer,
@@ -92,11 +92,11 @@ function examplesDirOf(bundle: Bundle): string {
 interface TestCtx {
   cfg: Config;
   bundle: Bundle;
-  store: SessionStore;
+  store: DeckStore;
   renders: RenderQueue;
   jobsRun: RenderJob[];
   hostRenderer: ReturnType<typeof fakeHostRenderer>;
-  localSessionsRoot: string;
+  localDecksRoot: string;
   httpServer: Server;
   port: number;
 }
@@ -105,7 +105,7 @@ let ctx: TestCtx;
 
 beforeEach(async () => {
   const bundle = makeBundle();
-  const localSessionsRoot = mkdtempSync(join(tmpdir(), "deckd-mcp-local-"));
+  const localDecksRoot = mkdtempSync(join(tmpdir(), "deckd-mcp-local-"));
   const cfg: Config = {
     port: 0,
     dbPath: ":memory:",
@@ -113,30 +113,30 @@ beforeEach(async () => {
     bundleDir: "/tmp/deckd-mcp-bundle-unused",
     scratchDir: "/tmp/deckd-mcp-scratch-unused",
     canonicalCacheDir: mkdtempSync(join(tmpdir(), "deckd-mcp-cache-")),
-    localSessionsRoot,
+    localDecksRoot,
     chromePath: "/tmp/deckd-mcp-chrome-unused",
   };
-  const store = new SessionStore(":memory:");
+  const store = new DeckStore(":memory:");
   const jobsRun: RenderJob[] = [];
   const renders = new RenderQueue(async (job) => {
     jobsRun.push(job);
     return { code: 0, output: `rendered ${job.slug}` };
   });
   const bundleRef = createBundleRef(bundle);
-  const sessions = new SessionService(store, cfg, bundleRef);
+  const decks = new DeckService(store, cfg, bundleRef);
   const hostRenderer = fakeHostRenderer();
 
   // mountMcp must register /mcp's own json() parser before buildApp's global one
   // mounts, so a large MCP body is parsed by /mcp's limit rather than the global
   // route's smaller one (Express has no other way to give one path a bigger limit).
   const app = express();
-  mountMcp(app, { cfg, bundleRef, sessions, store, renders, hostRenderer });
-  buildApp({ cfg, bundleRef, store, sessions, renders, app });
+  mountMcp(app, { cfg, bundleRef, decks, store, renders, hostRenderer });
+  buildApp({ cfg, bundleRef, store, decks, renders, app });
   const httpServer = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => httpServer.once("listening", () => resolve()));
   const port = (httpServer.address() as AddressInfo).port;
 
-  ctx = { cfg, bundle, store, renders, jobsRun, hostRenderer, localSessionsRoot, httpServer, port };
+  ctx = { cfg, bundle, store, renders, jobsRun, hostRenderer, localDecksRoot, httpServer, port };
 });
 
 afterEach(async () => {
@@ -169,8 +169,8 @@ describe("MCP server", () => {
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual(
       [
-        "check_deck", "create_session", "export_deck", "get_deck", "get_slide_previews", "list_examples",
-        "list_sessions", "read_guide", "upload_asset", "write_slides",
+        "check_deck", "create_deck", "export_deck", "get_deck", "get_slide_previews", "list_decks",
+        "list_examples", "read_guide", "upload_asset", "write_slides",
       ].sort(),
     );
     await client.close();
@@ -228,7 +228,7 @@ describe("MCP server", () => {
       const bareBundleRef = createBundleRef(bundle);
       const app = express();
       mountMcp(app, {
-        cfg: ctx.cfg, bundleRef: bareBundleRef, sessions: new SessionService(ctx.store, ctx.cfg, bareBundleRef), store: ctx.store,
+        cfg: ctx.cfg, bundleRef: bareBundleRef, decks: new DeckService(ctx.store, ctx.cfg, bareBundleRef), store: ctx.store,
         renders: ctx.renders, hostRenderer: ctx.hostRenderer,
       });
       const httpServer = app.listen(0, "127.0.0.1");
@@ -266,16 +266,16 @@ describe("MCP server", () => {
     });
   });
 
-  it("full loop: create_session -> write_slides (with render) -> get_deck", async () => {
+  it("full loop: create_deck -> write_slides (with render) -> get_deck", async () => {
     const client = await connect();
 
-    const created = await client.callTool({ name: "create_session", arguments: { slug: "my-deck" } });
+    const created = await client.callTool({ name: "create_deck", arguments: { slug: "my-deck" } });
     expect(created.isError).toBeFalsy();
-    const { id, slug } = jsonOf(created as CallToolResult) as { id: string; slug: string };
+    const { deck_id: id, slug } = jsonOf(created as CallToolResult) as { deck_id: string; slug: string };
     expect(slug).toBe("my-deck");
-    expect(existsSync(join(ctx.localSessionsRoot, id, "presentations/my-deck/slides.md"))).toBe(true);
+    expect(existsSync(join(ctx.localDecksRoot, id, "presentations/my-deck/slides.md"))).toBe(true);
 
-    const deck1 = jsonOf((await client.callTool({ name: "get_deck", arguments: { session_id: id } })) as CallToolResult) as {
+    const deck1 = jsonOf((await client.callTool({ name: "get_deck", arguments: { deck_id: id } })) as CallToolResult) as {
       markdown: string;
       mtime: number;
     };
@@ -283,7 +283,7 @@ describe("MCP server", () => {
 
     const written = await client.callTool({
       name: "write_slides",
-      arguments: { session_id: id, markdown: "# edited deck", base_mtime: deck1.mtime },
+      arguments: { deck_id: id, markdown: "# edited deck", base_mtime: deck1.mtime },
     });
     expect(written.isError).toBeFalsy();
     const writeResult = jsonOf(written as CallToolResult) as {
@@ -298,7 +298,7 @@ describe("MCP server", () => {
     expect(ctx.jobsRun.at(-1)).toMatchObject({ slug: "my-deck", key: `${id}:my-deck` });
     expect(ctx.hostRenderer.checkLayoutCalls.at(-1)).toMatchObject({ key: `${id}:my-deck`, slug: "my-deck" });
 
-    const deck2 = jsonOf((await client.callTool({ name: "get_deck", arguments: { session_id: id } })) as CallToolResult) as {
+    const deck2 = jsonOf((await client.callTool({ name: "get_deck", arguments: { deck_id: id } })) as CallToolResult) as {
       markdown: string;
     };
     expect(deck2.markdown).toBe("# edited deck");
@@ -306,9 +306,9 @@ describe("MCP server", () => {
     await client.close();
   });
 
-  it("create_session rejects a slug that fails SLUG_RE with a clear error", async () => {
+  it("create_deck rejects a slug that fails SLUG_RE with a clear error", async () => {
     const client = await connect();
-    const r = await client.callTool({ name: "create_session", arguments: { slug: "Not A Slug!" } });
+    const r = await client.callTool({ name: "create_deck", arguments: { slug: "Not A Slug!" } });
     expect(r.isError).toBe(true);
     expect(textOf(r as CallToolResult)).toMatch(/invalid slug/);
     await client.close();
@@ -317,12 +317,12 @@ describe("MCP server", () => {
   it("write_slides with a stale base_mtime returns the fresh content and mtime instead of throwing", async () => {
     const client = await connect();
     const created = jsonOf(
-      (await client.callTool({ name: "create_session", arguments: { slug: "conflict-deck" } })) as CallToolResult,
-    ) as { id: string };
+      (await client.callTool({ name: "create_deck", arguments: { slug: "conflict-deck" } })) as CallToolResult,
+    ) as { deck_id: string };
 
     const r = await client.callTool({
       name: "write_slides",
-      arguments: { session_id: created.id, markdown: "# stale write", base_mtime: 1 },
+      arguments: { deck_id: created.deck_id, markdown: "# stale write", base_mtime: 1 },
     });
     expect(r.isError).toBe(true);
     const body = jsonOf(r as CallToolResult) as { error: string; mtime: number; content: string };
@@ -332,30 +332,30 @@ describe("MCP server", () => {
     await client.close();
   });
 
-  it("write_slides on an unknown session_id errors instead of throwing", async () => {
+  it("write_slides on an unknown deck_id errors instead of throwing", async () => {
     const client = await connect();
     const r = await client.callTool({
       name: "write_slides",
-      arguments: { session_id: "not-a-real-session-id", markdown: "# x", base_mtime: 0 },
+      arguments: { deck_id: "not-a-real-deck-id", markdown: "# x", base_mtime: 0 },
     });
     expect(r.isError).toBe(true);
-    expect(textOf(r as CallToolResult)).toMatch(/no such session/);
+    expect(textOf(r as CallToolResult)).toMatch(/no such deck/);
     await client.close();
   });
 
-  it("list_sessions returns only local sessions for the dev user", async () => {
+  it("list_decks returns only local decks for the dev user", async () => {
     const client = await connect();
     const created = jsonOf(
-      (await client.callTool({ name: "create_session", arguments: { slug: "listed-deck" } })) as CallToolResult,
-    ) as { id: string; slug: string };
+      (await client.callTool({ name: "create_deck", arguments: { slug: "listed-deck" } })) as CallToolResult,
+    ) as { deck_id: string; slug: string };
     // A sandbox-kind row for the same user must not show up via MCP.
     ctx.store.create({
       id: "sandbox-row", userEmail: ctx.cfg.devUser, name: "n", slug: "n", appId: "a", sandboxId: "s", kind: "sandbox",
     });
 
-    const r = await client.callTool({ name: "list_sessions", arguments: {} });
-    const rows = jsonOf(r as CallToolResult) as Array<{ id: string; slug: string; createdAt: number; updatedAt: number }>;
-    expect(rows.map((row) => row.id)).toEqual([created.id]);
+    const r = await client.callTool({ name: "list_decks", arguments: {} });
+    const rows = jsonOf(r as CallToolResult) as Array<{ deck_id: string; slug: string; createdAt: number; updatedAt: number }>;
+    expect(rows.map((row) => row.deck_id)).toEqual([created.deck_id]);
     expect(rows[0]?.slug).toBe("listed-deck");
     expect(typeof rows[0]?.createdAt).toBe("number");
     expect(typeof rows[0]?.updatedAt).toBe("number");
@@ -373,18 +373,18 @@ describe("MCP server", () => {
       await client.close();
     });
 
-    it("errors when both session_id and example are given", async () => {
+    it("errors when both deck_id and example are given", async () => {
       const client = await connect();
       const r = await client.callTool({
         name: "get_deck",
-        arguments: { session_id: "x", example: "template-gallery" },
+        arguments: { deck_id: "x", example: "template-gallery" },
       });
       expect(r.isError).toBe(true);
       expect(textOf(r as CallToolResult)).toMatch(/exactly one of/);
       await client.close();
     });
 
-    it("errors when neither session_id nor example is given", async () => {
+    it("errors when neither deck_id nor example is given", async () => {
       const client = await connect();
       const r = await client.callTool({ name: "get_deck", arguments: {} });
       expect(r.isError).toBe(true);
@@ -403,15 +403,15 @@ describe("MCP server", () => {
     it("lists assets recursively, excluding preview/ and slides.md", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "asset-deck" } })) as CallToolResult,
-      ) as { id: string };
-      const deckDir = join(ctx.localSessionsRoot, created.id, "presentations/asset-deck");
+        (await client.callTool({ name: "create_deck", arguments: { slug: "asset-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
+      const deckDir = join(ctx.localDecksRoot, created.deck_id, "presentations/asset-deck");
       mkdirSync(join(deckDir, "images"), { recursive: true });
       mkdirSync(join(deckDir, "preview"), { recursive: true });
       writeFileSync(join(deckDir, "images", "logo.png"), "png-bytes");
       writeFileSync(join(deckDir, "preview", "asset-deck.001.png"), "preview-bytes");
 
-      const r = await client.callTool({ name: "get_deck", arguments: { session_id: created.id } });
+      const r = await client.callTool({ name: "get_deck", arguments: { deck_id: created.deck_id } });
       const body = jsonOf(r as CallToolResult) as { assets: Array<{ path: string; size: number }> };
       const paths = body.assets.map((a) => a.path);
       expect(paths).toContain("images/logo.png");
@@ -425,20 +425,20 @@ describe("MCP server", () => {
     it("saves into images/ or charts/ and returns the relative path", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "upload-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await client.callTool({ name: "create_deck", arguments: { slug: "upload-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
 
       const r1 = await client.callTool({
         name: "upload_asset",
-        arguments: { session_id: created.id, path: "images/logo.png", data_base64: Buffer.from("png-data").toString("base64") },
+        arguments: { deck_id: created.deck_id, path: "images/logo.png", data_base64: Buffer.from("png-data").toString("base64") },
       });
       expect(r1.isError).toBeFalsy();
       expect(jsonOf(r1 as CallToolResult)).toEqual({ path: "images/logo.png" });
-      expect(existsSync(join(ctx.localSessionsRoot, created.id, "presentations/upload-deck/images/logo.png"))).toBe(true);
+      expect(existsSync(join(ctx.localDecksRoot, created.deck_id, "presentations/upload-deck/images/logo.png"))).toBe(true);
 
       const r2 = await client.callTool({
         name: "upload_asset",
-        arguments: { session_id: created.id, path: "charts/plot.svg", data_base64: Buffer.from("<svg/>").toString("base64") },
+        arguments: { deck_id: created.deck_id, path: "charts/plot.svg", data_base64: Buffer.from("<svg/>").toString("base64") },
       });
       expect(jsonOf(r2 as CallToolResult)).toEqual({ path: "charts/plot.svg" });
       await client.close();
@@ -447,11 +447,11 @@ describe("MCP server", () => {
     it("rejects path traversal", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "traversal-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await client.callTool({ name: "create_deck", arguments: { slug: "traversal-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
       const r = await client.callTool({
         name: "upload_asset",
-        arguments: { session_id: created.id, path: "../evil.png", data_base64: Buffer.from("x").toString("base64") },
+        arguments: { deck_id: created.deck_id, path: "../evil.png", data_base64: Buffer.from("x").toString("base64") },
       });
       expect(r.isError).toBe(true);
       await client.close();
@@ -460,11 +460,11 @@ describe("MCP server", () => {
     it("rejects a disallowed extension", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "ext-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await client.callTool({ name: "create_deck", arguments: { slug: "ext-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
       const r = await client.callTool({
         name: "upload_asset",
-        arguments: { session_id: created.id, path: "images/evil.exe", data_base64: Buffer.from("x").toString("base64") },
+        arguments: { deck_id: created.deck_id, path: "images/evil.exe", data_base64: Buffer.from("x").toString("base64") },
       });
       expect(r.isError).toBe(true);
       await client.close();
@@ -473,12 +473,12 @@ describe("MCP server", () => {
     it("rejects data over the 10MB decoded cap", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "big-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await client.callTool({ name: "create_deck", arguments: { slug: "big-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
       const big = Buffer.alloc(10 * 1024 * 1024 + 1).toString("base64");
       const r = await client.callTool({
         name: "upload_asset",
-        arguments: { session_id: created.id, path: "images/big.png", data_base64: big },
+        arguments: { deck_id: created.deck_id, path: "images/big.png", data_base64: big },
       });
       expect(r.isError).toBe(true);
       expect(textOf(r as CallToolResult)).toMatch(/too large/);
@@ -487,11 +487,11 @@ describe("MCP server", () => {
   });
 
   describe("get_slide_previews", () => {
-    it("returns image content blocks for a local session's own deck", async () => {
+    it("returns image content blocks for a local deck", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "preview-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await client.callTool({ name: "create_deck", arguments: { slug: "preview-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
 
       const fixtureDir = mkdtempSync(join(tmpdir(), "deckd-mcp-pngs-"));
       const pngs = [
@@ -500,7 +500,7 @@ describe("MCP server", () => {
       ];
       ctx.hostRenderer.previewResult = { code: 0, output: "ok", pngs };
 
-      const r = await client.callTool({ name: "get_slide_previews", arguments: { session_id: created.id } });
+      const r = await client.callTool({ name: "get_slide_previews", arguments: { deck_id: created.deck_id } });
       expect(r.isError).toBeFalsy();
       const content = (r as CallToolResult).content;
       expect(content[0]?.type).toBe("text");
@@ -509,7 +509,7 @@ describe("MCP server", () => {
       expect(images.every((img) => img.type === "image" && img.mimeType === "image/png")).toBe(true);
       expect(images[0]?.type === "image" && Buffer.from(images[0].data, "base64").toString("utf8")).toBe("page-1");
 
-      expect(ctx.hostRenderer.previewCalls.at(-1)).toMatchObject({ key: `${created.id}:preview-deck`, slug: "preview-deck" });
+      expect(ctx.hostRenderer.previewCalls.at(-1)).toMatchObject({ key: `${created.deck_id}:preview-deck`, slug: "preview-deck" });
       await client.close();
     });
 
@@ -519,8 +519,8 @@ describe("MCP server", () => {
     it("reports the bundle's effective imageScale in the returned text block", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "scale-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await client.callTool({ name: "create_deck", arguments: { slug: "scale-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
       const fixtureDir = mkdtempSync(join(tmpdir(), "deckd-mcp-pngs-"));
       ctx.hostRenderer.previewResult = {
         code: 0,
@@ -528,7 +528,7 @@ describe("MCP server", () => {
         pngs: [makePngFixture(fixtureDir, "scale-deck.001.png", "page-1")],
       };
 
-      const r = await client.callTool({ name: "get_slide_previews", arguments: { session_id: created.id } });
+      const r = await client.callTool({ name: "get_slide_previews", arguments: { deck_id: created.deck_id } });
       expect(textOf(r as CallToolResult)).toContain("scale 2");
       await client.close();
     });
@@ -536,8 +536,8 @@ describe("MCP server", () => {
     it("honors the pages argument", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "pages-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await client.callTool({ name: "create_deck", arguments: { slug: "pages-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
       const fixtureDir = mkdtempSync(join(tmpdir(), "deckd-mcp-pngs-"));
       ctx.hostRenderer.previewResult = {
         code: 0,
@@ -545,7 +545,7 @@ describe("MCP server", () => {
         pngs: [1, 2, 3].map((n) => makePngFixture(fixtureDir, `pages-deck.00${n}.png`, `page-${n}`)),
       };
 
-      const r = await client.callTool({ name: "get_slide_previews", arguments: { session_id: created.id, pages: [2] } });
+      const r = await client.callTool({ name: "get_slide_previews", arguments: { deck_id: created.deck_id, pages: [2] } });
       const images = (r as CallToolResult).content.filter((c) => c.type === "image");
       expect(images).toHaveLength(1);
       expect(images[0]?.type === "image" && Buffer.from(images[0].data, "base64").toString("utf8")).toBe("page-2");
@@ -573,11 +573,11 @@ describe("MCP server", () => {
     it("returns an error result when the render fails, instead of throwing", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "broken-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await client.callTool({ name: "create_deck", arguments: { slug: "broken-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
       ctx.hostRenderer.previewResult = { code: 1, output: "marp blew up", pngs: [] };
 
-      const r = await client.callTool({ name: "get_slide_previews", arguments: { session_id: created.id } });
+      const r = await client.callTool({ name: "get_slide_previews", arguments: { deck_id: created.deck_id } });
       expect(r.isError).toBe(true);
       expect(textOf(r as CallToolResult)).toContain("marp blew up");
       await client.close();
@@ -586,10 +586,10 @@ describe("MCP server", () => {
     it("rejects a pages array longer than 40", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "toomany-pages-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await client.callTool({ name: "create_deck", arguments: { slug: "toomany-pages-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
       const pages = Array.from({ length: 41 }, (_, i) => i + 1);
-      const r = await client.callTool({ name: "get_slide_previews", arguments: { session_id: created.id, pages } });
+      const r = await client.callTool({ name: "get_slide_previews", arguments: { deck_id: created.deck_id, pages } });
       expect(r.isError).toBe(true);
       expect(textOf(r as CallToolResult)).toMatch(/pages/);
       await client.close();
@@ -600,18 +600,18 @@ describe("MCP server", () => {
     it("reports overflow issues found by the layout check", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "overflow-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await client.callTool({ name: "create_deck", arguments: { slug: "overflow-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
       ctx.hostRenderer.checkLayoutResult = {
         code: 0, output: "ok", issues: [{ slide: 3, kind: "overflow-y", amountPx: 40 }],
       };
 
       const deck = jsonOf(
-        (await client.callTool({ name: "get_deck", arguments: { session_id: created.id } })) as CallToolResult,
+        (await client.callTool({ name: "get_deck", arguments: { deck_id: created.deck_id } })) as CallToolResult,
       ) as { mtime: number };
       const r = await client.callTool({
         name: "write_slides",
-        arguments: { session_id: created.id, markdown: "# edited", base_mtime: deck.mtime },
+        arguments: { deck_id: created.deck_id, markdown: "# edited", base_mtime: deck.mtime },
       });
       expect(r.isError).toBeFalsy();
       const body = jsonOf(r as CallToolResult) as { render_code: number; layout_issues: unknown };
@@ -631,7 +631,7 @@ describe("MCP server", () => {
       const app = express();
       const failingBundleRef = createBundleRef(ctx.bundle);
       mountMcp(app, {
-        cfg: ctx.cfg, bundleRef: failingBundleRef, sessions: new SessionService(ctx.store, ctx.cfg, failingBundleRef), store: ctx.store,
+        cfg: ctx.cfg, bundleRef: failingBundleRef, decks: new DeckService(ctx.store, ctx.cfg, failingBundleRef), store: ctx.store,
         renders: failingRenders, hostRenderer: ctx.hostRenderer,
       });
       const httpServer = app.listen(0, "127.0.0.1");
@@ -641,15 +641,15 @@ describe("MCP server", () => {
       await failClient.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
 
       const created = jsonOf(
-        (await failClient.callTool({ name: "create_session", arguments: { slug: "broken-render-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await failClient.callTool({ name: "create_deck", arguments: { slug: "broken-render-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
       const deck = jsonOf(
-        (await failClient.callTool({ name: "get_deck", arguments: { session_id: created.id } })) as CallToolResult,
+        (await failClient.callTool({ name: "get_deck", arguments: { deck_id: created.deck_id } })) as CallToolResult,
       ) as { mtime: number };
       const before = ctx.hostRenderer.checkLayoutCalls.length;
       const r = await failClient.callTool({
         name: "write_slides",
-        arguments: { session_id: created.id, markdown: "# x", base_mtime: deck.mtime },
+        arguments: { deck_id: created.deck_id, markdown: "# x", base_mtime: deck.mtime },
       });
       const body = jsonOf(r as CallToolResult) as { render_code: number; layout_issues?: unknown };
       expect(body.render_code).toBe(1);
@@ -663,16 +663,16 @@ describe("MCP server", () => {
     it("includes a note instead of failing the save when the layout check itself fails", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "checkfail-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await client.callTool({ name: "create_deck", arguments: { slug: "checkfail-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
       ctx.hostRenderer.checkLayoutResult = { code: -1, output: "chrome not found", issues: [] };
 
       const deck = jsonOf(
-        (await client.callTool({ name: "get_deck", arguments: { session_id: created.id } })) as CallToolResult,
+        (await client.callTool({ name: "get_deck", arguments: { deck_id: created.deck_id } })) as CallToolResult,
       ) as { mtime: number };
       const r = await client.callTool({
         name: "write_slides",
-        arguments: { session_id: created.id, markdown: "# edited", base_mtime: deck.mtime },
+        arguments: { deck_id: created.deck_id, markdown: "# edited", base_mtime: deck.mtime },
       });
       expect(r.isError).toBeFalsy();
       const body = jsonOf(r as CallToolResult) as { render_code: number; layout_issues?: unknown; layout_check_note?: string };
@@ -684,32 +684,32 @@ describe("MCP server", () => {
   });
 
   describe("check_deck", () => {
-    it("returns a readable report and the structured issues for a session's own deck", async () => {
+    it("returns a readable report and the structured issues for a local deck", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "checkdeck-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await client.callTool({ name: "create_deck", arguments: { slug: "checkdeck-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
       ctx.hostRenderer.checkLayoutResult = {
         code: 0, output: "ok", issues: [{ slide: 2, kind: "overflow-x", amountPx: 15 }],
       };
 
-      const r = await client.callTool({ name: "check_deck", arguments: { session_id: created.id } });
+      const r = await client.callTool({ name: "check_deck", arguments: { deck_id: created.deck_id } });
       expect(r.isError).toBeFalsy();
       const body = jsonOf(r as CallToolResult) as { report: string; issues: unknown[] };
       expect(body.report).toMatch(/overflow-x/);
       expect(body.issues).toEqual([{ slide: 2, kind: "overflow-x", amountPx: 15 }]);
-      expect(ctx.hostRenderer.checkLayoutCalls.at(-1)).toMatchObject({ key: `${created.id}:checkdeck-deck`, slug: "checkdeck-deck" });
+      expect(ctx.hostRenderer.checkLayoutCalls.at(-1)).toMatchObject({ key: `${created.deck_id}:checkdeck-deck`, slug: "checkdeck-deck" });
       await client.close();
     });
 
     it("reports a clean deck clearly", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "clean-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await client.callTool({ name: "create_deck", arguments: { slug: "clean-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
       ctx.hostRenderer.checkLayoutResult = { code: 0, output: "ok", issues: [] };
 
-      const r = await client.callTool({ name: "check_deck", arguments: { session_id: created.id } });
+      const r = await client.callTool({ name: "check_deck", arguments: { deck_id: created.deck_id } });
       const body = jsonOf(r as CallToolResult) as { report: string; issues: unknown[] };
       expect(body.report).toMatch(/no layout issues/i);
       expect(body.issues).toEqual([]);
@@ -732,17 +732,17 @@ describe("MCP server", () => {
     it("returns an error result when the layout check fails, instead of throwing", async () => {
       const client = await connect();
       const created = jsonOf(
-        (await client.callTool({ name: "create_session", arguments: { slug: "checkdeck-fail-deck" } })) as CallToolResult,
-      ) as { id: string };
+        (await client.callTool({ name: "create_deck", arguments: { slug: "checkdeck-fail-deck" } })) as CallToolResult,
+      ) as { deck_id: string };
       ctx.hostRenderer.checkLayoutResult = { code: 1, output: "marp blew up", issues: [] };
 
-      const r = await client.callTool({ name: "check_deck", arguments: { session_id: created.id } });
+      const r = await client.callTool({ name: "check_deck", arguments: { deck_id: created.deck_id } });
       expect(r.isError).toBe(true);
       expect(textOf(r as CallToolResult)).toContain("marp blew up");
       await client.close();
     });
 
-    it("errors when neither session_id nor example is given", async () => {
+    it("errors when neither deck_id nor example is given", async () => {
       const client = await connect();
       const r = await client.callTool({ name: "check_deck", arguments: {} });
       expect(r.isError).toBe(true);
@@ -818,70 +818,70 @@ describe("MCP server", () => {
       return id;
     }
 
-    it("write_slides rejects a sandbox-kind session_id", async () => {
+    it("write_slides rejects a sandbox-kind deck_id", async () => {
       const client = await connect();
       const id = seedSandboxRow();
       const r = await client.callTool({
         name: "write_slides",
-        arguments: { session_id: id, markdown: "# x", base_mtime: 0 },
+        arguments: { deck_id: id, markdown: "# x", base_mtime: 0 },
       });
       expect(r.isError).toBe(true);
-      expect(textOf(r as CallToolResult)).toMatch(/has not been migrated to a local session/);
+      expect(textOf(r as CallToolResult)).toMatch(/has not been migrated to a local deck/);
       await client.close();
     });
 
-    it("get_deck rejects a sandbox-kind session_id", async () => {
+    it("get_deck rejects a sandbox-kind deck_id", async () => {
       const client = await connect();
       const id = seedSandboxRow();
-      const r = await client.callTool({ name: "get_deck", arguments: { session_id: id } });
+      const r = await client.callTool({ name: "get_deck", arguments: { deck_id: id } });
       expect(r.isError).toBe(true);
-      expect(textOf(r as CallToolResult)).toMatch(/has not been migrated to a local session/);
+      expect(textOf(r as CallToolResult)).toMatch(/has not been migrated to a local deck/);
       await client.close();
     });
 
-    it("upload_asset rejects a sandbox-kind session_id", async () => {
+    it("upload_asset rejects a sandbox-kind deck_id", async () => {
       const client = await connect();
       const id = seedSandboxRow();
       const r = await client.callTool({
         name: "upload_asset",
-        arguments: { session_id: id, path: "images/logo.png", data_base64: Buffer.from("x").toString("base64") },
+        arguments: { deck_id: id, path: "images/logo.png", data_base64: Buffer.from("x").toString("base64") },
       });
       expect(r.isError).toBe(true);
-      expect(textOf(r as CallToolResult)).toMatch(/has not been migrated to a local session/);
+      expect(textOf(r as CallToolResult)).toMatch(/has not been migrated to a local deck/);
       await client.close();
     });
 
-    it("get_slide_previews rejects a sandbox-kind session_id", async () => {
+    it("get_slide_previews rejects a sandbox-kind deck_id", async () => {
       const client = await connect();
       const id = seedSandboxRow();
-      const r = await client.callTool({ name: "get_slide_previews", arguments: { session_id: id } });
+      const r = await client.callTool({ name: "get_slide_previews", arguments: { deck_id: id } });
       expect(r.isError).toBe(true);
-      expect(textOf(r as CallToolResult)).toMatch(/has not been migrated to a local session/);
+      expect(textOf(r as CallToolResult)).toMatch(/has not been migrated to a local deck/);
       await client.close();
     });
 
-    it("export_deck rejects a sandbox-kind session_id", async () => {
+    it("export_deck rejects a sandbox-kind deck_id", async () => {
       const client = await connect();
       const id = seedSandboxRow();
-      const r = await client.callTool({ name: "export_deck", arguments: { session_id: id } });
+      const r = await client.callTool({ name: "export_deck", arguments: { deck_id: id } });
       expect(r.isError).toBe(true);
-      expect(textOf(r as CallToolResult)).toMatch(/has not been migrated to a local session/);
+      expect(textOf(r as CallToolResult)).toMatch(/has not been migrated to a local deck/);
       await client.close();
     });
 
-    it("check_deck rejects a sandbox-kind session_id", async () => {
+    it("check_deck rejects a sandbox-kind deck_id", async () => {
       const client = await connect();
       const id = seedSandboxRow();
-      const r = await client.callTool({ name: "check_deck", arguments: { session_id: id } });
+      const r = await client.callTool({ name: "check_deck", arguments: { deck_id: id } });
       expect(r.isError).toBe(true);
-      expect(textOf(r as CallToolResult)).toMatch(/has not been migrated to a local session/);
+      expect(textOf(r as CallToolResult)).toMatch(/has not been migrated to a local deck/);
       await client.close();
     });
   });
 
   it("scopes the 20mb JSON limit to /mcp only; other routes cap at 2mb", async () => {
     const bigContent = "a".repeat(3 * 1024 * 1024); // > 2mb global cap, < 20mb /mcp cap
-    const res = await fetch(`http://127.0.0.1:${ctx.port}/api/sessions/anything/source`, {
+    const res = await fetch(`http://127.0.0.1:${ctx.port}/api/decks/anything/source`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ content: bigContent, baseMtime: 0 }),
@@ -890,14 +890,14 @@ describe("MCP server", () => {
 
     const client = await connect();
     const created = jsonOf(
-      (await client.callTool({ name: "create_session", arguments: { slug: "big-body-deck" } })) as CallToolResult,
-    ) as { id: string };
+      (await client.callTool({ name: "create_deck", arguments: { slug: "big-body-deck" } })) as CallToolResult,
+    ) as { deck_id: string };
     // Base64 of 3MB is ~4MB: over the 2mb global cap, under both /mcp's 20mb JSON
     // cap and upload_asset's 10MB decoded cap.
     const bigAsset = Buffer.alloc(3 * 1024 * 1024).toString("base64");
     const r = await client.callTool({
       name: "upload_asset",
-      arguments: { session_id: created.id, path: "images/big-but-ok.png", data_base64: bigAsset },
+      arguments: { deck_id: created.deck_id, path: "images/big-but-ok.png", data_base64: bigAsset },
     });
     expect(r.isError).toBeFalsy();
     await client.close();
@@ -906,12 +906,12 @@ describe("MCP server", () => {
   it("export_deck returns the download URL and a description of the zip contents", async () => {
     const client = await connect();
     const created = jsonOf(
-      (await client.callTool({ name: "create_session", arguments: { slug: "export-deck" } })) as CallToolResult,
-    ) as { id: string };
-    const r = await client.callTool({ name: "export_deck", arguments: { session_id: created.id } });
+      (await client.callTool({ name: "create_deck", arguments: { slug: "export-deck" } })) as CallToolResult,
+    ) as { deck_id: string };
+    const r = await client.callTool({ name: "export_deck", arguments: { deck_id: created.deck_id } });
     expect(r.isError).toBeFalsy();
     const text = textOf(r as CallToolResult);
-    expect(text).toContain(`/api/sessions/${created.id}/export`);
+    expect(text).toContain(`/api/decks/${created.deck_id}/export`);
     expect(text.toLowerCase()).toContain("zip");
     await client.close();
   });

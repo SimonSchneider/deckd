@@ -28,13 +28,14 @@ Every data dir defaults under `DECKD_DATA_DIR` (default `./data`), so a bare
 | ----------------------------- | --------------------------------- | --------------------------------------------- |
 | `DECKD_PORT`                  | `8790`                            | HTTP port                                     |
 | `DECKD_DATA_DIR`               | `./data`                          | Anchor for every dir below                    |
-| `DECKD_DB`                     | `<data>/deckd.sqlite3`             | Sqlite session store                          |
+| `DECKD_DB`                     | `<data>/deckd.sqlite3`             | Sqlite deck store                          |
 | `DECKD_DEV_USER`               | `dev@localhost`                   | Local trial has no auth; every request acts as this user |
 | `DECKD_BUNDLE_DIR`             | `<data>/bundle`                   | Active bundle (see below)                     |
 | `DECKD_SCRATCH_DIR`            | `<data>/render-scratch`           | Host-render working dir                       |
 | `DECKD_CANONICAL_CACHE_DIR`    | `<data>/canonical-cache`          | Cache for rendering example decks             |
-| `DECKD_LOCAL_SESSIONS_DIR`     | `<data>/local-sessions`           | Every session's deck directory                |
+| `DECKD_LOCAL_DECKS_DIR`        | `<data>/local-decks`              | Every deck's directory                        |
 | `DECKD_CHROME_PATH` / `CHROME_PATH` | macOS default Chrome install | Chrome binary for slide-layout checks         |
+| `DECKD_DEBUG_MCP`              | unset                             | Set to `1` to log every MCP `tools/call` (tool name + arguments, long strings elided) |
 
 ## Test
 
@@ -57,21 +58,21 @@ Requires deckd running (`npm run dev`).
 
 deckd is three pieces over one engine core:
 
-- **Web app** (`src/server.ts`, `public/index.html`): a session list, a markdown
+- **Web app** (`src/server.ts`, `public/index.html`): a deck list, a markdown
   editor, and a PDF/PPTX preview. No in-app AI -- editing is either by hand in
   the browser or by an external AI over MCP.
-- **MCP server** (`src/mcp.ts`), mounted at `/mcp`: the same session/render/asset
+- **MCP server** (`src/mcp.ts`), mounted at `/mcp`: the same deck/render/asset
   operations as the web app, exposed as tools for an external AI client.
 - **Render engine** (`src/host-render.ts`, `src/render.ts`): renders a deck to
   PDF/PPTX, slide previews, and a layout check, running marp-cli directly against
   the active bundle's theme. Every render is a direct host render; there is no
   sandbox and no chart execution (a client that generates charts uploads the
-  resulting images itself, via `upload_asset`/`/api/sessions/:id/assets`).
+  resulting images itself, via `upload_asset`/`/api/decks/:id/assets`).
 - **CLI** (`src/cli.ts`, `bin/deckd.mjs`): the same render engine as a standalone
   command, so an advanced user can run deckd inside their own repo as a marp
   wrapper with no server involved. See [CLI](#cli) below.
 
-A session is a plain directory: `<DECKD_LOCAL_SESSIONS_DIR>/<sessionId>/presentations/<slug>/`.
+A deck is a plain directory: `<DECKD_LOCAL_DECKS_DIR>/<deckId>/presentations/<slug>/`.
 There is no other backing store.
 
 ## Rendering and the bundle
@@ -95,7 +96,7 @@ curl -o deckd-bundle.zip http://127.0.0.1:8790/api/bundle/download   # download 
 The upload is validated (manifest well-formed and resolves, every file's extension
 on a content allowlist -- css/md/json/svg/png/jpg/jpeg/webp/gif/woff/woff2/ttf/otf/txt,
 no symlinks, per-file and total size caps) and swapped in atomically, live, with no
-restart -- every session picks up the new bundle on its very next render. For local
+restart -- every deck picks up the new bundle on its very next render. For local
 dev without a zip in hand, point `DECKD_BUNDLE_DIR` at a bundle directory you
 already have (e.g. `examples/starter-bundle`), or build one with `deckd pack`.
 
@@ -103,8 +104,8 @@ If a bundle upload is interrupted between its two renames, the old bundle is lef
 at `<bundleDir>.stale-<uuid>` instead of being cleaned up; recover by renaming it
 back to `<bundleDir>`.
 
-To re-render every session's own deck after a bundle change (e.g. a theme fix),
-use `scripts/rerender-all.sh` — it lists sessions via `/api/me` and POSTs a render
+To re-render every deck after a bundle change (e.g. a theme fix),
+use `scripts/rerender-all.sh` — it lists decks via `/api/me` and POSTs a render
 for each:
 
 ```bash
@@ -132,7 +133,7 @@ loudly on load rather than silently doing nothing.
 ## CLI
 
 `deckd` also runs as a standalone CLI: the same engine code as the server, with no
-HTTP, sessions, or MCP involved -- for an advanced user running deckd inside their
+HTTP, decks, or MCP involved -- for an advanced user running deckd inside their
 own repo as a marp wrapper.
 
 ### Invoking it
@@ -208,10 +209,10 @@ claude mcp add --transport http deckd http://127.0.0.1:8790/mcp
 | Tool                 | What it does                                                             |
 | -------------------- | ------------------------------------------------------------------------- |
 | `read_guide`         | Returns the active bundle's authoring guide. Call this first.             |
-| `list_sessions`      | Lists your sessions (id, slug, timestamps).                              |
-| `create_session`     | Creates a session, optionally seeded with markdown.                      |
+| `list_decks`         | Lists your decks (`deck_id`, slug, timestamps).                          |
+| `create_deck`        | Creates a deck, optionally seeded with markdown; returns its `deck_id`.  |
 | `list_examples`      | Lists canonical example decks for style reference.                       |
-| `get_deck`           | Reads a deck's markdown, mtime, and asset listing (own session or example). |
+| `get_deck`           | Reads a deck's markdown, mtime, and asset listing (own deck or example). |
 | `write_slides`       | Saves markdown and renders; returns render errors to iterate on.         |
 | `upload_asset`       | Saves an image/SVG under `images/` or `charts/`, returns its path.       |
 | `get_slide_previews` | Renders and returns slide screenshots as images, to check your work.     |

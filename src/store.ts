@@ -7,16 +7,16 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-// "sandbox" is a sandboxd-backed session (app clone + container); "local" is a
+// "sandbox" is a sandboxd-backed deck (app clone + container); "local" is a
 // plain directory on disk with no sandboxd involvement at all (BYOAI/MCP path).
-export type SessionKind = "sandbox" | "local";
+export type DeckKind = "sandbox" | "local";
 
 // Exported for index.ts's startup check and for direct testing. dbPath moved from
 // the cwd-relative "./deckd.sqlite3" to "<dataDir>/deckd.sqlite3" (see config.ts);
 // DatabaseSync creates a missing dbPath from scratch, so a deployment that
 // restarts onto the new default without first moving its data would silently open
 // an empty db instead of failing -- indistinguishable from "deckd forgot every
-// session" until someone notices. Only refuses to start when the legacy file is
+// deck" until someone notices. Only refuses to start when the legacy file is
 // still there and the new path isn't: a genuinely fresh install has neither, and
 // that's fine.
 export function assertDbPathNotAbandoningLegacy(dbPath: string, legacyDbPath: string): void {
@@ -29,9 +29,9 @@ export function assertDbPathNotAbandoningLegacy(dbPath: string, legacyDbPath: st
   );
 }
 
-export interface SessionRow {
+export interface DeckRow {
   id: string; userEmail: string; name: string; slug: string;
-  appId: string; sandboxId: string; kind: SessionKind; createdAt: number; touchedAt: number;
+  appId: string; sandboxId: string; kind: DeckKind; createdAt: number; touchedAt: number;
   brokenReason: string | null;
 }
 
@@ -42,13 +42,32 @@ export interface SessionRow {
 // way -- so only that specific SQLite error is caught; anything else still throws.
 export function addKindColumn(db: DatabaseSync): void {
   try {
-    db.exec("ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'sandbox'");
+    db.exec("ALTER TABLE decks ADD COLUMN kind TEXT NOT NULL DEFAULT 'sandbox'");
   } catch (e: unknown) {
     if (!(e instanceof Error) || !e.message.includes("duplicate column name")) throw e;
   }
 }
 
-export class SessionStore {
+// The table was called "sessions" until the deck rename; an existing db still has it
+// under that name, so it is renamed in place before CREATE TABLE IF NOT EXISTS below
+// would otherwise create an empty "decks" beside it. Exported for the same reason as
+// addKindColumn: two processes opening one db can both see "sessions" before either
+// one's RENAME runs, and the loser's then fails because "decks" already exists --
+// which is exactly the state it wanted, so only that error is swallowed.
+export function renameLegacyTable(db: DatabaseSync): void {
+  const names = new Set(
+    (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('sessions', 'decks')").all() as Array<{ name: string }>)
+      .map((r) => r.name),
+  );
+  if (!names.has("sessions") || names.has("decks")) return;
+  try {
+    db.exec("ALTER TABLE sessions RENAME TO decks");
+  } catch (e: unknown) {
+    if (!(e instanceof Error) || !e.message.includes("already another table")) throw e;
+  }
+}
+
+export class DeckStore {
   private db: DatabaseSync;
   constructor(dbPath: string) {
     // DatabaseSync opens a raw file handle and does not create missing parent
@@ -57,7 +76,8 @@ export class SessionStore {
     // dirname(":memory:") is ".", which always exists, so this is a no-op for it.
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath);
-    this.db.exec(`CREATE TABLE IF NOT EXISTS sessions (
+    renameLegacyTable(this.db);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS decks (
       id TEXT PRIMARY KEY, userEmail TEXT NOT NULL, name TEXT NOT NULL, slug TEXT NOT NULL,
       appId TEXT NOT NULL, sandboxId TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'sandbox',
       createdAt INTEGER NOT NULL, touchedAt INTEGER NOT NULL, brokenReason TEXT
@@ -67,16 +87,16 @@ export class SessionStore {
   // CREATE TABLE IF NOT EXISTS above is a no-op against a pre-existing DB from before
   // "kind" existed, so a fresh column with its DEFAULT is added by hand; SQLite
   // backfills every existing row with the default when the ADD COLUMN has one, which
-  // is what turns pre-migration rows into "sandbox" sessions.
+  // is what turns pre-migration rows into "sandbox" decks.
   private migrateKindColumn(): void {
-    const cols = this.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+    const cols = this.db.prepare("PRAGMA table_info(decks)").all() as Array<{ name: string }>;
     if (!cols.some((c) => c.name === "kind")) addKindColumn(this.db);
   }
-  create(r: Pick<SessionRow, "id" | "userEmail" | "name" | "slug" | "appId" | "sandboxId"> & { kind?: SessionKind }): SessionRow {
+  create(r: Pick<DeckRow, "id" | "userEmail" | "name" | "slug" | "appId" | "sandboxId"> & { kind?: DeckKind }): DeckRow {
     const now = Date.now();
     const kind = r.kind ?? "sandbox";
     this.db.prepare(
-      `INSERT INTO sessions (id,userEmail,name,slug,appId,sandboxId,kind,createdAt,touchedAt,brokenReason)
+      `INSERT INTO decks (id,userEmail,name,slug,appId,sandboxId,kind,createdAt,touchedAt,brokenReason)
        VALUES (@id,@userEmail,@name,@slug,@appId,@sandboxId,@kind,@createdAt,@touchedAt,NULL)`,
     ).run({
       id: r.id, userEmail: r.userEmail, name: r.name, slug: r.slug, appId: r.appId, sandboxId: r.sandboxId,
@@ -86,26 +106,26 @@ export class SessionStore {
     if (row === null) throw new Error("insert failed");
     return row;
   }
-  get(id: string): SessionRow | null {
-    const row: unknown = this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(id);
-    return row === undefined ? null : (row as SessionRow);
+  get(id: string): DeckRow | null {
+    const row: unknown = this.db.prepare("SELECT * FROM decks WHERE id = ?").get(id);
+    return row === undefined ? null : (row as DeckRow);
   }
   // Only "local" rows: a "sandbox" row is a pre-migration leftover the app no
   // longer knows how to serve (see index.ts's startup check), so it is excluded
   // here rather than surfaced to a client that has nowhere to render it from.
-  listForUser(email: string): SessionRow[] {
-    return this.db.prepare("SELECT * FROM sessions WHERE userEmail = ? AND kind = 'local' ORDER BY touchedAt DESC").all(email) as unknown as SessionRow[];
+  listForUser(email: string): DeckRow[] {
+    return this.db.prepare("SELECT * FROM decks WHERE userEmail = ? AND kind = 'local' ORDER BY touchedAt DESC").all(email) as unknown as DeckRow[];
   }
   // Every "sandbox"-kind row, across all users -- for the startup check that warns
-  // about pre-migration sessions the app will not serve (see index.ts).
-  listSandboxSessions(): SessionRow[] {
-    return this.db.prepare("SELECT * FROM sessions WHERE kind = 'sandbox'").all() as unknown as SessionRow[];
+  // about pre-migration decks the app will not serve (see index.ts).
+  listSandboxDecks(): DeckRow[] {
+    return this.db.prepare("SELECT * FROM decks WHERE kind = 'sandbox'").all() as unknown as DeckRow[];
   }
   touch(id: string): void {
-    this.db.prepare("UPDATE sessions SET touchedAt = ? WHERE id = ?").run(Date.now(), id);
+    this.db.prepare("UPDATE decks SET touchedAt = ? WHERE id = ?").run(Date.now(), id);
   }
   markBroken(id: string, reason: string): void {
-    this.db.prepare("UPDATE sessions SET brokenReason = ? WHERE id = ?").run(reason, id);
+    this.db.prepare("UPDATE decks SET brokenReason = ? WHERE id = ?").run(reason, id);
   }
-  delete(id: string): void { this.db.prepare("DELETE FROM sessions WHERE id = ?").run(id); }
+  delete(id: string): void { this.db.prepare("DELETE FROM decks WHERE id = ?").run(id); }
 }

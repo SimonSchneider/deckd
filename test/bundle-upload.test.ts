@@ -32,7 +32,7 @@ function makeCfg(): Config {
     bundleDir: join(dataDir, "bundle"),
     scratchDir: join(dataDir, "render-scratch"),
     canonicalCacheDir: join(dataDir, "canonical-cache"),
-    localSessionsRoot: join(dataDir, "local-sessions"),
+    localDecksRoot: join(dataDir, "local-decks"),
     chromePath: "/tmp/deckd-test-chrome-unused",
   };
 }

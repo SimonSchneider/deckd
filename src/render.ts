@@ -11,8 +11,8 @@ export interface RenderJob {
 
 export type RenderFn = (job: RenderJob) => Promise<{ code: number; output: string }>;
 
-// Keyed by whatever the caller passes (server.ts uses `${sessionId}:${deck}`),
-// so renders for different decks of the same session never coalesce or block
+// Keyed by whatever the caller passes (server.ts uses `${deckId}:${deck}`),
+// so renders for different slugs under the same deck id never coalesce or block
 // each other; the running-count cap below is still global across all keys.
 export class RenderQueue {
   private running = new Set<string>();
@@ -42,7 +42,7 @@ export class RenderQueue {
   }
 
   // Drops queued and result state for every key starting with keyPrefix (e.g. every
-  // deck of a deleted session, keyed `${sessionId}:`). A render already in flight for
+  // slug of a deleted deck, keyed `${deckId}:`). A render already in flight for
   // one of those keys keeps running to completion; record() just writes a result
   // nothing will ever read again.
   prune(keyPrefix: string): void {

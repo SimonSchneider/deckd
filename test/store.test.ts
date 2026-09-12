@@ -3,13 +3,13 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionStore, addKindColumn, assertDbPathNotAbandoningLegacy } from "../src/store.js";
+import { DeckStore, addKindColumn, renameLegacyTable, assertDbPathNotAbandoningLegacy } from "../src/store.js";
 
-function mk(): SessionStore { return new SessionStore(":memory:"); }
+function mk(): DeckStore { return new DeckStore(":memory:"); }
 const base = { id: "s1", userEmail: "a@example.com", name: "My deck", slug: "my-deck", appId: "app1", sandboxId: "sb1" };
 
-describe("SessionStore", () => {
-  it("creates and gets a session", () => {
+describe("DeckStore", () => {
+  it("creates and gets a deck", () => {
     const s = mk();
     const row = s.create(base);
     expect(row.createdAt).toBeGreaterThan(0);
@@ -19,7 +19,7 @@ describe("SessionStore", () => {
   it("opens the db when its parent directory doesn't exist yet", () => {
     const dir = mkdtempSync(join(tmpdir(), "deckd-store-missing-dir-"));
     const dbPath = join(dir, "nested", "sub", "deckd.sqlite3");
-    const s = new SessionStore(dbPath);
+    const s = new DeckStore(dbPath);
     s.create(base);
     expect(s.get("s1")?.slug).toBe("my-deck");
   });
@@ -30,6 +30,8 @@ describe("SessionStore", () => {
     s.create({ ...base, id: "s2", appId: "", sandboxId: "", kind: "local" });
     expect(s.get("s2")?.kind).toBe("local");
   });
+  // The legacy fixture below is a pre-rename "sessions" table without "kind": opening it
+  // has to run both migrations (renameLegacyTable, then addKindColumn) in that order.
   it("adds the kind column to a pre-existing DB that predates it, defaulting existing rows to sandbox", () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), "deckd-store-migrate-")), "deckd.sqlite3");
     const raw = new DatabaseSync(dbPath);
@@ -44,7 +46,7 @@ describe("SessionStore", () => {
     ).run();
     raw.close();
 
-    const s = new SessionStore(dbPath);
+    const s = new DeckStore(dbPath);
     expect(s.get("old1")?.kind).toBe("sandbox");
     // the store is usable afterwards, including for new local rows
     s.create({ id: "new1", userEmail: "a@example.com", name: "n", slug: "n", appId: "", sandboxId: "", kind: "local" });
@@ -53,7 +55,7 @@ describe("SessionStore", () => {
   it("addKindColumn tolerates a duplicate-column race from a concurrent migration", () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), "deckd-store-migrate-race-")), "deckd.sqlite3");
     const raw = new DatabaseSync(dbPath);
-    raw.exec(`CREATE TABLE sessions (
+    raw.exec(`CREATE TABLE decks (
       id TEXT PRIMARY KEY, userEmail TEXT NOT NULL, name TEXT NOT NULL, slug TEXT NOT NULL,
       appId TEXT NOT NULL, sandboxId TEXT NOT NULL,
       createdAt INTEGER NOT NULL, touchedAt INTEGER NOT NULL, brokenReason TEXT
@@ -64,7 +66,7 @@ describe("SessionStore", () => {
     expect(() => addKindColumn(raw)).not.toThrow();
     raw.close();
   });
-  it("lists only the user's local sessions, newest touched first", () => {
+  it("lists only the user's local decks, newest touched first", () => {
     const s = mk();
     s.create({ ...base, kind: "local" });
     s.create({ ...base, id: "s2", kind: "local" });
@@ -80,12 +82,43 @@ describe("SessionStore", () => {
     s.create({ ...base, id: "s2", kind: "local" });
     expect(s.listForUser("a@example.com").map((r) => r.id)).toEqual(["s2"]);
   });
-  it("listSandboxSessions returns every sandbox-kind row, across users", () => {
+  it("listSandboxDecks returns every sandbox-kind row, across users", () => {
     const s = mk();
     s.create(base); // kind "sandbox"
     s.create({ ...base, id: "s2", userEmail: "b@example.com" }); // kind "sandbox"
     s.create({ ...base, id: "s3", kind: "local" });
-    expect(s.listSandboxSessions().map((r) => r.id).sort()).toEqual(["s1", "s2"]);
+    expect(s.listSandboxDecks().map((r) => r.id).sort()).toEqual(["s1", "s2"]);
+  });
+  it("renames a pre-rename \"sessions\" table to \"decks\" and keeps every row", () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), "deckd-store-rename-")), "deckd.sqlite3");
+    const raw = new DatabaseSync(dbPath);
+    raw.exec(`CREATE TABLE sessions (
+      id TEXT PRIMARY KEY, userEmail TEXT NOT NULL, name TEXT NOT NULL, slug TEXT NOT NULL,
+      appId TEXT NOT NULL, sandboxId TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'sandbox',
+      createdAt INTEGER NOT NULL, touchedAt INTEGER NOT NULL, brokenReason TEXT
+    )`);
+    raw.prepare(
+      `INSERT INTO sessions (id,userEmail,name,slug,appId,sandboxId,kind,createdAt,touchedAt,brokenReason)
+       VALUES ('old1','a@example.com','Old deck','old-deck','','','local',1,1,NULL)`,
+    ).run();
+    raw.close();
+
+    const s = new DeckStore(dbPath);
+    expect(s.listForUser("a@example.com").map((r) => r.id)).toEqual(["old1"]);
+    const check = new DatabaseSync(dbPath);
+    const tables = (check.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>).map((r) => r.name);
+    check.close();
+    expect(tables).toEqual(["decks"]);
+  });
+  it("renameLegacyTable is a no-op on a fresh db and on an already-renamed one", () => {
+    const raw = new DatabaseSync(":memory:");
+    expect(() => renameLegacyTable(raw)).not.toThrow();
+    raw.exec("CREATE TABLE decks (id TEXT PRIMARY KEY)");
+    raw.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY)");
+    // both present: the rename must not clobber the live "decks" table
+    expect(() => renameLegacyTable(raw)).not.toThrow();
+    const tables = (raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>).map((r) => r.name);
+    expect(tables).toEqual(["decks", "sessions"]);
   });
   it("markBroken and delete", () => {
     const s = mk();

@@ -2,8 +2,8 @@ import express from "express";
 import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { loadBundle, createBundleRef } from "./bundle.js";
-import { SessionStore, assertDbPathNotAbandoningLegacy } from "./store.js";
-import { SessionService } from "./sessions.js";
+import { DeckStore, assertDbPathNotAbandoningLegacy } from "./store.js";
+import { DeckService, migrateLegacyDecksRoot } from "./decks.js";
 import { RenderQueue, createRenderRunner } from "./render.js";
 import { createHostRenderer } from "./host-render.js";
 import { buildApp } from "./server.js";
@@ -21,22 +21,25 @@ const bundleRef = createBundleRef(loadBundle(cfg.bundleDir));
 // See store.ts's assertDbPathNotAbandoningLegacy: a pre-pivot deployment's db lived
 // at this cwd-relative default before dbPath moved under DECKD_DATA_DIR.
 assertDbPathNotAbandoningLegacy(cfg.dbPath, join(process.cwd(), "deckd.sqlite3"));
-const store = new SessionStore(cfg.dbPath);
+const store = new DeckStore(cfg.dbPath);
 
 // A "sandbox"-kind row is a pre-migration leftover from before the bundle pivot
 // removed sandboxd: this app has nowhere to render it from (no sandbox, no
 // sandboxd-backed workspace), so it is never served -- listForUser already
 // excludes it from listings; this just makes the gap loud instead of silent.
-const legacySandboxSessions = store.listSandboxSessions();
-if (legacySandboxSessions.length > 0) {
+const legacySandboxDecks = store.listSandboxDecks();
+if (legacySandboxDecks.length > 0) {
   console.error(
-    `deckd: ${legacySandboxSessions.length} legacy sandbox session(s) will NOT be served: ` +
-      `${legacySandboxSessions.map((r) => r.id).join(", ")}. ` +
+    `deckd: ${legacySandboxDecks.length} legacy sandbox deck(s) will NOT be served: ` +
+      `${legacySandboxDecks.map((r) => r.id).join(", ")}. ` +
       "There is no migration path for these -- export any content you need from their old workspace by hand.",
   );
 }
 
-const sessions = new SessionService(store, cfg, bundleRef);
+// See decks.ts's migrateLegacyDecksRoot: the decks root was "local-sessions" before
+// the deck rename.
+migrateLegacyDecksRoot(cfg.localDecksRoot);
+const decks = new DeckService(store, cfg, bundleRef);
 // The composition root is the one place allowed to read process.env: the host
 // renderer's child processes (marp, node for gen-pptx) need a real PATH/HOME to
 // resolve their own dependencies, which no other module reaches into process.env for.
@@ -53,11 +56,11 @@ const app = express();
 // server binds 127.0.0.1 (below), matching the rest of this service today. Mounted
 // before buildApp below so /mcp's own larger json() limit is registered ahead of
 // buildApp's global one (see mcp.ts's mountMcp).
-mountMcp(app, { cfg, bundleRef, sessions, store, renders, hostRenderer });
+mountMcp(app, { cfg, bundleRef, decks, store, renders, hostRenderer });
 // Separate admin endpoint for bundle management (see mcp-admin.ts): /mcp (above) has
 // no bundle tools at all, so a deck-editing AI client cannot touch the live bundle.
 mountMcpAdmin(app, { cfg, bundleRef });
-buildApp({ cfg, bundleRef, store, sessions, renders, app });
+buildApp({ cfg, bundleRef, store, decks, renders, app });
 app.listen(cfg.port, "127.0.0.1", () => {
   console.log(`deckd on http://127.0.0.1:${cfg.port}`);
   console.log(`MCP endpoint on http://127.0.0.1:${cfg.port}/mcp`);
