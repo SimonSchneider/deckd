@@ -86,7 +86,7 @@ export function listDecks(appDir: string): string[] {
     .sort();
 }
 
-// Lists example decks straight from a bundle's examplesDir: unlike a session
+// Lists example decks straight from a bundle's examplesDir: unlike a deck
 // appDir (listDecks above), examplesDir already points at the decks themselves --
 // there is no extra "presentations" segment to descend through first.
 export function listExampleDecks(examplesDir: string): string[] {
@@ -301,7 +301,7 @@ export function isOsJunkEntry(name: string): boolean {
 // whether the user asked for it or not, and __MACOSX/ alongside a deck's real folder
 // otherwise breaks that heuristic (two top-level entries instead of one). Exported for
 // bundle-upload.ts's installBundleZip/applyBundleEdit, and safe to call directly on a
-// live, deckd-owned directory (a bundle dir, a session's deck dir) since junk is never
+// live, deckd-owned directory (a bundle dir, a deck dir) since junk is never
 // meaningful content worth preserving.
 export function stripOsJunk(root: string, log: (msg: string) => void = () => {}): void {
   for (const entry of readdirSync(root)) {
@@ -429,7 +429,7 @@ export function saveAssetAt(appDir: string, slug: string, relPath: string, data:
 export async function exportZip(appDir: string, slug: string, outFile: string): Promise<void> {
   const p = deckPaths(appDir, slug);
   rmSync(outFile, { force: true });
-  // A session's deck dir is deckd-owned, so any OS junk sitting in it (e.g. Finder
+  // A deck dir is deckd-owned, so any OS junk sitting in it (e.g. Finder
   // dropping a .DS_Store while the user browsed it) is deleted in place rather than
   // shipped in the export -- same reasoning as bundle-pack.ts's zipBundleDir.
   stripOsJunk(p.dir);

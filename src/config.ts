@@ -8,7 +8,7 @@ export interface Config {
   bundleDir: string;
   scratchDir: string;
   canonicalCacheDir: string;
-  localSessionsRoot: string;
+  localDecksRoot: string;
   chromePath: string;
 }
 
@@ -36,7 +36,7 @@ export function resolveChromePath(env: NodeJS.ProcessEnv): string {
 
 export function loadConfig(env: NodeJS.ProcessEnv): Config {
   // Anchor for every data dir below, so a bare `npm run dev` has somewhere to put
-  // its sqlite db, bundle, scratch and session directories with zero required env.
+  // its sqlite db, bundle, scratch and deck directories with zero required env.
   const dataDir = env.DECKD_DATA_DIR ?? join(process.cwd(), "data");
   return {
     port: Number(env.DECKD_PORT ?? 8790),
@@ -50,9 +50,9 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     // Holds read-only cache copies of canonical (non-own) decks used to preview them
     // without ever rendering with a deckDir that points into the bundle itself.
     canonicalCacheDir: env.DECKD_CANONICAL_CACHE_DIR ?? join(dataDir, "canonical-cache"),
-    // Root for a session's plain <localSessionsRoot>/<sessionId>/presentations/<slug>/
-    // directory -- every session is one of these; there is no other backing store.
-    localSessionsRoot: env.DECKD_LOCAL_SESSIONS_DIR ?? join(dataDir, "local-sessions"),
+    // Root for a deck's plain <localDecksRoot>/<deckId>/presentations/<slug>/
+    // directory -- every deck is one of these; there is no other backing store.
+    localDecksRoot: env.DECKD_LOCAL_DECKS_DIR ?? join(dataDir, "local-decks"),
     chromePath: resolveChromePath(env),
   };
 }

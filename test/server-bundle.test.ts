@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Express } from "express";
 import { buildApp } from "../src/server.js";
-import { SessionStore } from "../src/store.js";
-import { SessionService } from "../src/sessions.js";
+import { DeckStore } from "../src/store.js";
+import { DeckService } from "../src/decks.js";
 import { RenderQueue, createRenderRunner } from "../src/render.js";
 import { createHostRenderer, type SpawnFn } from "../src/host-render.js";
 import { createBundleRef, loadBundle } from "../src/bundle.js";
@@ -63,9 +63,9 @@ function zipDir(srcDir: string): Buffer {
   return readFileSync(zipPath);
 }
 
-async function waitForRenderSettle(app: Express, sessionId: string): Promise<void> {
+async function waitForRenderSettle(app: Express, deckId: string): Promise<void> {
   for (let i = 0; i < 100; i++) {
-    const r = await request(app).get(`/api/sessions/${sessionId}`);
+    const r = await request(app).get(`/api/decks/${deckId}`);
     if (!r.body.render.rendering && !r.body.render.queued) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -83,20 +83,20 @@ describe("PUT/GET /api/bundle", () => {
       bundleDir: join(dataDir, "bundle"),
       scratchDir: join(dataDir, "render-scratch"),
       canonicalCacheDir: join(dataDir, "canonical-cache"),
-      localSessionsRoot: join(dataDir, "local-sessions"),
+      localDecksRoot: join(dataDir, "local-decks"),
       chromePath: "/tmp/deckd-test-chrome-unused",
     };
     writeBundleTree(cfg.bundleDir, "old-theme-v1");
     const bundleRef = createBundleRef(loadBundle(cfg.bundleDir));
-    const store = new SessionStore(":memory:");
-    const sessions = new SessionService(store, cfg, bundleRef);
+    const store = new DeckStore(":memory:");
+    const decks = new DeckService(store, cfg, bundleRef);
     const marpPath = makeStubMarp(dataDir);
     const hostRenderer = createHostRenderer({
       bundleRef, scratchRoot: cfg.scratchDir, env: { PATH: process.env.PATH ?? "" },
       exec: makeExec(marpPath), marpBinPath: "stub-marp",
     });
     const renders = new RenderQueue(createRenderRunner(hostRenderer), 2);
-    app = buildApp({ cfg, bundleRef, store, sessions, renders });
+    app = buildApp({ cfg, bundleRef, store, decks, renders });
   });
 
   it("GET reflects the seeded bundle's manifest and counts", async () => {
@@ -146,14 +146,14 @@ describe("PUT/GET /api/bundle", () => {
   });
 
   it("swaps the live bundle with no restart, and a subsequent render of the same deck picks up the new theme", async () => {
-    const created = await request(app).post("/api/sessions").send({ name: "d" });
-    const sessionId: string = created.body.id;
+    const created = await request(app).post("/api/decks").send({ name: "d" });
+    const deckId: string = created.body.id;
     const slug: string = created.body.slug;
 
-    const pdfPath = join(cfg.localSessionsRoot, sessionId, "presentations", slug, `${slug}.pdf`);
+    const pdfPath = join(cfg.localDecksRoot, deckId, "presentations", slug, `${slug}.pdf`);
 
-    await request(app).post(`/api/sessions/${sessionId}/render`).query({ deck: slug });
-    await waitForRenderSettle(app, sessionId);
+    await request(app).post(`/api/decks/${deckId}/render`);
+    await waitForRenderSettle(app, deckId);
     expect(readFileSync(pdfPath, "utf8")).toContain("old-theme-v1");
 
     const newBundleTree = scratchDir("deckd-server-bundle-new-");
@@ -165,8 +165,8 @@ describe("PUT/GET /api/bundle", () => {
     const getRes = await request(app).get("/api/bundle");
     expect(getRes.body.uploadedAt).toBeGreaterThanOrEqual(putRes.body.uploadedAt);
 
-    await request(app).post(`/api/sessions/${sessionId}/render`).query({ deck: slug });
-    await waitForRenderSettle(app, sessionId);
+    await request(app).post(`/api/decks/${deckId}/render`);
+    await waitForRenderSettle(app, deckId);
     const after = readFileSync(pdfPath, "utf8");
     expect(after).toContain("new-theme-v2");
     expect(after).not.toContain("old-theme-v1");

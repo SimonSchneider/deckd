@@ -15,8 +15,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { buildApp } from "../src/server.js";
 import { mountMcp } from "../src/mcp.js";
 import { mountMcpAdmin, MAX_MCP_BUNDLE_UPLOAD_BYTES } from "../src/mcp-admin.js";
-import { SessionStore } from "../src/store.js";
-import { SessionService } from "../src/sessions.js";
+import { DeckStore } from "../src/store.js";
+import { DeckService } from "../src/decks.js";
 import { RenderQueue, createRenderRunner } from "../src/render.js";
 import { createHostRenderer, type SpawnFn } from "../src/host-render.js";
 import { createBundleRef, loadBundle, type BundleRef, type BundleWriter } from "../src/bundle.js";
@@ -70,9 +70,9 @@ function zipDir(srcDir: string): Buffer {
   return readFileSync(zipPath);
 }
 
-async function waitForRenderSettle(app: Express, sessionId: string): Promise<void> {
+async function waitForRenderSettle(app: Express, deckId: string): Promise<void> {
   for (let i = 0; i < 100; i++) {
-    const r = await request(app).get(`/api/sessions/${sessionId}`);
+    const r = await request(app).get(`/api/decks/${deckId}`);
     if (!r.body.render.rendering && !r.body.render.queued) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -98,13 +98,13 @@ beforeEach(async () => {
     bundleDir: join(dataDir, "bundle"),
     scratchDir: join(dataDir, "render-scratch"),
     canonicalCacheDir: join(dataDir, "canonical-cache"),
-    localSessionsRoot: join(dataDir, "local-sessions"),
+    localDecksRoot: join(dataDir, "local-decks"),
     chromePath: "/tmp/deckd-mcp-admin-chrome-unused",
   };
   writeBundleTree(cfg.bundleDir, "v1");
   const bundleRef = createBundleRef(loadBundle(cfg.bundleDir));
-  const store = new SessionStore(":memory:");
-  const sessions = new SessionService(store, cfg, bundleRef);
+  const store = new DeckStore(":memory:");
+  const decks = new DeckService(store, cfg, bundleRef);
   const marpPath = makeStubMarp(dataDir);
   const hostRenderer = createHostRenderer({
     bundleRef, scratchRoot: cfg.scratchDir, env: { PATH: process.env.PATH ?? "" },
@@ -113,9 +113,9 @@ beforeEach(async () => {
   const renders = new RenderQueue(createRenderRunner(hostRenderer), 2);
 
   const app = express();
-  mountMcp(app, { cfg, bundleRef, sessions, store, renders, hostRenderer });
+  mountMcp(app, { cfg, bundleRef, decks, store, renders, hostRenderer });
   mountMcpAdmin(app, { cfg, bundleRef });
-  buildApp({ cfg, bundleRef, store, sessions, renders, app });
+  buildApp({ cfg, bundleRef, store, decks, renders, app });
   const httpServer = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => httpServer.once("listening", () => resolve()));
   const port = (httpServer.address() as AddressInfo).port;
@@ -172,8 +172,8 @@ describe("admin MCP (/mcp-admin)", () => {
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual(
       [
-        "check_deck", "create_session", "export_deck", "get_deck", "get_slide_previews", "list_examples",
-        "list_sessions", "read_guide", "upload_asset", "write_slides",
+        "check_deck", "create_deck", "export_deck", "get_deck", "get_slide_previews", "list_decks",
+        "list_examples", "read_guide", "upload_asset", "write_slides",
       ].sort(),
     );
     for (const bundleTool of ["get_bundle_info", "read_bundle_file", "write_bundle_file", "delete_bundle_file", "upload_bundle", "download_bundle"]) {
@@ -265,13 +265,13 @@ describe("admin MCP (/mcp-admin)", () => {
 
   describe("write_bundle_file", () => {
     it("writes a new theme.css and a subsequent render picks it up", async () => {
-      const created = await request(ctx.app).post("/api/sessions").send({ name: "d" });
-      const sessionId: string = created.body.id;
+      const created = await request(ctx.app).post("/api/decks").send({ name: "d" });
+      const deckId: string = created.body.id;
       const slug: string = created.body.slug;
-      const pdfPath = join(ctx.cfg.localSessionsRoot, sessionId, "presentations", slug, `${slug}.pdf`);
+      const pdfPath = join(ctx.cfg.localDecksRoot, deckId, "presentations", slug, `${slug}.pdf`);
 
-      await request(ctx.app).post(`/api/sessions/${sessionId}/render`).query({ deck: slug });
-      await waitForRenderSettle(ctx.app, sessionId);
+      await request(ctx.app).post(`/api/decks/${deckId}/render`);
+      await waitForRenderSettle(ctx.app, deckId);
       expect(readFileSync(pdfPath, "utf8")).toContain("v1");
 
       const client = await connectAdmin();
@@ -282,8 +282,8 @@ describe("admin MCP (/mcp-admin)", () => {
       expect(typeof wBody.mtime).toBe("number");
       expect(readFileSync(ctx.bundleRef.current().themeCss, "utf8")).toContain("v2");
 
-      await request(ctx.app).post(`/api/sessions/${sessionId}/render`).query({ deck: slug });
-      await waitForRenderSettle(ctx.app, sessionId);
+      await request(ctx.app).post(`/api/decks/${deckId}/render`);
+      await waitForRenderSettle(ctx.app, deckId);
       const after = readFileSync(pdfPath, "utf8");
       expect(after).toContain("v2");
       expect(after).not.toContain("v1");

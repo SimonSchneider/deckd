@@ -7,8 +7,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { Config } from "./config.js";
 import type { Bundle, BundleRef } from "./bundle.js";
-import { SessionStore, type SessionRow } from "./store.js";
-import { SessionService } from "./sessions.js";
+import { DeckStore, type DeckRow } from "./store.js";
+import { DeckService } from "./decks.js";
 import { RenderQueue, type RenderResult } from "./render.js";
 import { formatLayoutReport } from "./host-render.js";
 import type { HostRenderer, HostPreviewResult, HostCheckLayoutResult, LayoutIssue } from "./host-render.js";
@@ -18,8 +18,8 @@ import { MARP_SYNTAX_REFERENCE } from "./marp-syntax-reference.js";
 export interface McpDeps {
   cfg: Config;
   bundleRef: BundleRef;
-  sessions: SessionService;
-  store: SessionStore;
+  decks: DeckService;
+  store: DeckStore;
   renders: RenderQueue;
   hostRenderer: HostRenderer;
 }
@@ -30,7 +30,7 @@ const SERVER_VERSION = "1.0.0";
 const SERVER_INSTRUCTIONS = [
   "deckd builds Marp markdown decks. Call read_guide first for the full authoring guide",
   "-- it also includes a built-in Marp/Marpit syntax reference, so there's no need to look that up elsewhere.",
-  "Then create_session (or list_sessions to pick an existing one) to get a deck to work on.",
+  "Then create_deck (or list_decks to pick an existing one) to get a deck to work on.",
   "Edit it with write_slides: it saves the markdown and renders, returning any render error",
   "in the response -- keep iterating write_slides until render_code is 0.",
   "Upload any image or SVG chart you generate yourself with upload_asset, into images/ or",
@@ -42,7 +42,7 @@ const SERVER_INSTRUCTIONS = [
 
 const GUIDE_PREFACE = [
   "deckd is a local deck-building service. A deck is a Marp markdown presentation at",
-  "presentations/<slug>/slides.md inside a session's directory. Images live under images/,",
+  "presentations/<slug>/slides.md inside that deck's own directory. Images live under images/,",
   "generated charts (SVG preferred) under charts/. preview/ is reserved for deckd's own",
   "rendered slide screenshots -- never write deck content there.",
   "",
@@ -63,6 +63,18 @@ const WRITE_RENDER_TIMEOUT_MS = 180_000;
 
 // Default page count for get_slide_previews when the caller doesn't specify `pages`.
 const DEFAULT_PREVIEW_PAGES = 12;
+
+// Parameter docs shared by every tool that takes a deck reference, so an MCP client's
+// model sees the same wording everywhere: deck_id is the `deck_id` from list_decks /
+// create_deck (a UUID), never the slug; example is a name from list_examples.
+//
+// Nothing in deckd is called a "session" any more, and the MCP parameter is deck_id,
+// not session_id, for a concrete reason: at least one MCP proxy (Anthropic's
+// remote-devices aggregator, as seen from the Claude app) reserves a `session_id`
+// argument for its own routing and strips it before the call reaches this server, so
+// a parameter by that name silently never arrives.
+const DECK_ID_DOC = "Deck id (UUID) as returned in `deck_id` by list_decks or create_deck. Not the slug.";
+const EXAMPLE_DOC = "Name of a read-only example deck from list_examples. Use instead of deck_id, never both.";
 
 function textResult(text: string): CallToolResult {
   return { content: [{ type: "text", text }] };
@@ -95,10 +107,10 @@ function wrap<Args extends unknown[]>(
   };
 }
 
-// Every deck a session resolves to lives under this exact path, matching server.ts's
-// appDirOf for the "local" branch: <localSessionsRoot>/<sessionId>/.
-function localAppDir(cfg: Config, row: SessionRow): string {
-  return join(cfg.localSessionsRoot, row.id);
+// Every deck a deck resolves to lives under this exact path, matching server.ts's
+// appDirOf for the "local" branch: <localDecksRoot>/<deckId>/.
+function localAppDir(cfg: Config, row: DeckRow): string {
+  return join(cfg.localDecksRoot, row.id);
 }
 
 function mtimeOf(p: string): number | null {
@@ -109,25 +121,25 @@ function mtimeOf(p: string): number | null {
   }
 }
 
-// Every session is "local" now; a "sandbox" row can only be a pre-migration
+// Every deck is "local" now; a "sandbox" row can only be a pre-migration
 // leftover the app never serves (see store.ts's kind column and index.ts's
 // startup check), so reaching that branch here means the caller passed a
-// session_id from before that migration, not a runtime condition to route around.
-function resolveLocalSession(store: SessionStore, cfg: Config, sessionId: string): SessionRow {
-  const row = store.get(sessionId);
-  if (row === null || row.userEmail !== cfg.devUser) throw new Error(`no such session: ${sessionId}`);
+// deck_id from before that migration, not a runtime condition to route around.
+function resolveLocalDeck(store: DeckStore, cfg: Config, deckId: string): DeckRow {
+  const row = store.get(deckId);
+  if (row === null || row.userEmail !== cfg.devUser) throw new Error(`no such deck: ${deckId}`);
   if (row.kind !== "local") {
-    throw new Error(`session ${sessionId} has not been migrated to a local session (kind: ${row.kind})`);
+    throw new Error(`deck ${deckId} has not been migrated to a local deck (kind: ${row.kind})`);
   }
   return row;
 }
 
-type DeckRef = { kind: "session"; sessionId: string } | { kind: "example"; example: string };
+type DeckRef = { kind: "deck"; deckId: string } | { kind: "example"; example: string };
 
-function resolveDeckRef(sessionId: string | undefined, example: string | undefined): DeckRef {
-  if (sessionId !== undefined && example === undefined) return { kind: "session", sessionId };
-  if (example !== undefined && sessionId === undefined) return { kind: "example", example };
-  throw new Error("exactly one of session_id or example is required");
+function resolveDeckRef(deckId: string | undefined, example: string | undefined): DeckRef {
+  if (deckId !== undefined && example === undefined) return { kind: "deck", deckId };
+  if (example !== undefined && deckId === undefined) return { kind: "example", example };
+  throw new Error("exactly one of deck_id (from list_decks or create_deck) or example is required");
 }
 
 function resolveExampleDeckDir(bundle: Bundle, example: string): string {
@@ -137,16 +149,16 @@ function resolveExampleDeckDir(bundle: Bundle, example: string): string {
   return exampleDeckPaths(bundle.examplesDir, example).dir;
 }
 
-// Where to read a deck's slides.md/assets from: the session's own workspace for a
-// local session, or straight from the bundle's examples dir (read-only) for an example.
+// Where to read a deck's slides.md/assets from: the deck's own workspace for a
+// local deck, or straight from the bundle's examples dir (read-only) for an example.
 function resolveReadLocation(deps: McpDeps, ref: DeckRef): { slug: string; deckDir: string } {
   if (ref.kind === "example") return { slug: ref.example, deckDir: resolveExampleDeckDir(deps.bundleRef.current(), ref.example) };
-  const row = resolveLocalSession(deps.store, deps.cfg, ref.sessionId);
+  const row = resolveLocalDeck(deps.store, deps.cfg, ref.deckId);
   return { slug: row.slug, deckDir: deckPaths(localAppDir(deps.cfg, row), row.slug).dir };
 }
 
 // Where to render a deck's slide previews from, and the render-queue key to coalesce
-// on: the session's own deck directory keyed like a pdf render's own-deck key, or a
+// on: the deck's own directory keyed like a pdf render's own-deck key, or a
 // fresh canonical cache copy keyed like a pdf render's canonical key (see
 // server.ts's renderKey/canonicalRenderKey) -- an example is never rendered with
 // deckDir pointing into the bundle itself, since the host renderer copies its
@@ -170,7 +182,7 @@ function resolvePreviewLocation(deps: McpDeps, ref: DeckRef): { slug: string; de
       key: `canonical:${ref.example}`,
     };
   }
-  const row = resolveLocalSession(deps.store, deps.cfg, ref.sessionId);
+  const row = resolveLocalDeck(deps.store, deps.cfg, ref.deckId);
   return { slug: row.slug, deckDir: () => deckPaths(localAppDir(deps.cfg, row), row.slug).dir, key: `${row.id}:${row.slug}` };
 }
 
@@ -276,19 +288,25 @@ function registerTools(server: McpServer, deps: McpDeps, previewOnce: PreviewOnc
   );
 
   server.registerTool(
-    "list_sessions",
-    { description: "List your local deckd sessions (id, slug, createdAt, updatedAt)." },
+    "list_decks",
+    {
+      description:
+        "List your local decks. Each entry's `deck_id` is what get_deck, write_slides, upload_asset, " +
+        "get_slide_previews, check_deck and export_deck take; `slug` is only the deck's folder name.",
+    },
     wrap(async () => {
       // listForUser already excludes any legacy "sandbox"-kind row (see store.ts).
       const rows = deps.store.listForUser(deps.cfg.devUser);
-      return jsonResult(rows.map((r) => ({ id: r.id, slug: r.slug, createdAt: r.createdAt, updatedAt: r.touchedAt })));
+      return jsonResult(rows.map((r) => ({ deck_id: r.id, slug: r.slug, createdAt: r.createdAt, updatedAt: r.touchedAt })));
     }),
   );
 
   server.registerTool(
-    "create_session",
+    "create_deck",
     {
-      description: "Create a new local deckd session for a deck. Optionally seed it with markdown.",
+      description:
+        "Create a new local deck. Optionally seed it with markdown. " +
+        "Returns { deck_id, slug }; keep `deck_id` -- every other deck tool takes it.",
       inputSchema: {
         slug: z.string().describe("Deck slug: lowercase letters, digits, hyphens, max 40 chars."),
         markdown: z.string().optional().describe("Initial slides.md content; a blank title slide if omitted."),
@@ -299,8 +317,8 @@ function registerTools(server: McpServer, deps: McpDeps, previewOnce: PreviewOnc
         throw new Error(`invalid slug "${slug}": must match ${SLUG_RE.source} (lowercase letters/digits/hyphens, max 40 chars)`);
       }
       const seed: Seed = markdown === undefined ? { kind: "blank", title: slug } : { kind: "md", content: markdown };
-      const row = await deps.sessions.create(deps.cfg.devUser, slug, seed);
-      return jsonResult({ id: row.id, slug: row.slug });
+      const row = await deps.decks.create(deps.cfg.devUser, slug, seed);
+      return jsonResult({ deck_id: row.id, slug: row.slug });
     }),
   );
 
@@ -317,15 +335,15 @@ function registerTools(server: McpServer, deps: McpDeps, previewOnce: PreviewOnc
     "get_deck",
     {
       description:
-        "Read a deck's slides.md, mtime, and asset listing. Pass exactly one of session_id (your own deck) " +
+        "Read a deck's slides.md, mtime, and asset listing. Pass exactly one of deck_id (your own deck) " +
         "or example (a canonical deck, read-only).",
       inputSchema: {
-        session_id: z.string().optional(),
-        example: z.string().optional(),
+        deck_id: z.string().optional().describe(DECK_ID_DOC),
+        example: z.string().optional().describe(EXAMPLE_DOC),
       },
     },
-    wrap(async ({ session_id, example }) => {
-      const { slug, deckDir } = resolveReadLocation(deps, resolveDeckRef(session_id, example));
+    wrap(async ({ deck_id, example }) => {
+      const { slug, deckDir } = resolveReadLocation(deps, resolveDeckRef(deck_id, example));
       const slidesPath = join(deckDir, "slides.md");
       if (!existsSync(slidesPath)) throw new Error(`deck has no slides.md: ${slug}`);
       return jsonResult({
@@ -341,17 +359,17 @@ function registerTools(server: McpServer, deps: McpDeps, previewOnce: PreviewOnc
     "write_slides",
     {
       description:
-        "Save markdown for one of your local sessions and render it. Returns render_code/render_output -- " +
+        "Save markdown for one of your local decks and render it. Returns render_code/render_output -- " +
         "keep iterating until render_code is 0. base_mtime must be the mtime last read from get_deck or a " +
         "prior write_slides call; a stale base_mtime returns the current on-disk content and mtime to merge from.",
       inputSchema: {
-        session_id: z.string(),
+        deck_id: z.string().describe(DECK_ID_DOC),
         markdown: z.string(),
         base_mtime: z.number().describe("mtime (ms) this edit is based on, for the conflict check."),
       },
     },
-    wrap(async ({ session_id, markdown, base_mtime }) => {
-      const row = resolveLocalSession(deps.store, deps.cfg, session_id);
+    wrap(async ({ deck_id, markdown, base_mtime }) => {
+      const row = resolveLocalDeck(deps.store, deps.cfg, deck_id);
       const p = deckPaths(localAppDir(deps.cfg, row), row.slug);
       const current = mtimeOf(p.slides) ?? 0;
       // >1ms tolerance absorbs filesystem mtime rounding, matching the HTTP source route.
@@ -395,16 +413,16 @@ function registerTools(server: McpServer, deps: McpDeps, previewOnce: PreviewOnc
     "upload_asset",
     {
       description:
-        "Upload an image or SVG you generated to a local session's deck, under images/ or charts/. " +
+        "Upload an image or SVG you generated to one of your local decks, under images/ or charts/. " +
         "Returns the relative path to reference from slides.md.",
       inputSchema: {
-        session_id: z.string(),
+        deck_id: z.string().describe(DECK_ID_DOC),
         path: z.string().describe('Relative path within the deck, e.g. "images/logo.png" or "charts/plot.svg".'),
         data_base64: z.string().describe("Base64-encoded file contents, max 10MB decoded."),
       },
     },
-    wrap(async ({ session_id, path, data_base64 }) => {
-      const row = resolveLocalSession(deps.store, deps.cfg, session_id);
+    wrap(async ({ deck_id, path, data_base64 }) => {
+      const row = resolveLocalDeck(deps.store, deps.cfg, deck_id);
       // Base64 runs ~4/3 the size of the bytes it decodes to, so a payload already
       // over the cap can be rejected from its encoded length alone -- without
       // paying for a Buffer.from decode of a string that can be tens of MB. The
@@ -425,15 +443,15 @@ function registerTools(server: McpServer, deps: McpDeps, previewOnce: PreviewOnc
     {
       description:
         "Render and return slide screenshots as images, to check your work visually. Pass exactly one of " +
-        "session_id or example. Defaults to the first 12 pages; pass `pages` (1-indexed) to pick others.",
+        "deck_id or example. Defaults to the first 12 pages; pass `pages` (1-indexed) to pick others.",
       inputSchema: {
-        session_id: z.string().optional(),
-        example: z.string().optional(),
+        deck_id: z.string().optional().describe(DECK_ID_DOC),
+        example: z.string().optional().describe(EXAMPLE_DOC),
         pages: z.array(z.number().int().positive()).max(40).optional(),
       },
     },
-    wrap(async ({ session_id, example, pages }) => {
-      const { slug, deckDir, key } = resolvePreviewLocation(deps, resolveDeckRef(session_id, example));
+    wrap(async ({ deck_id, example, pages }) => {
+      const { slug, deckDir, key } = resolvePreviewLocation(deps, resolveDeckRef(deck_id, example));
       const result = await previewOnce(key, deckDir, slug);
       if (result.code !== 0) return errorResult(`preview render failed (exit ${result.code}):\n${result.output}`);
       if (result.pngs.length === 0) return textResult("no slides rendered: the deck produced zero pages");
@@ -466,15 +484,15 @@ function registerTools(server: McpServer, deps: McpDeps, previewOnce: PreviewOnc
     {
       description:
         "Check a deck for slide-layout issues: content that overflows the fixed slide box and gets clipped. " +
-        "Pass exactly one of session_id or example. Returns a readable report plus a structured issues array " +
+        "Pass exactly one of deck_id or example. Returns a readable report plus a structured issues array " +
         "(empty means the deck is clean).",
       inputSchema: {
-        session_id: z.string().optional(),
-        example: z.string().optional(),
+        deck_id: z.string().optional().describe(DECK_ID_DOC),
+        example: z.string().optional().describe(EXAMPLE_DOC),
       },
     },
-    wrap(async ({ session_id, example }) => {
-      const { slug, deckDir, key } = resolvePreviewLocation(deps, resolveDeckRef(session_id, example));
+    wrap(async ({ deck_id, example }) => {
+      const { slug, deckDir, key } = resolvePreviewLocation(deps, resolveDeckRef(deck_id, example));
       const result = await checkLayoutOnce(key, deckDir, slug);
       if (result.code !== 0) return errorResult(`layout check failed (exit ${result.code}):\n${result.output}`);
       return jsonResult({ report: formatLayoutReport(result.issues), issues: result.issues });
@@ -483,10 +501,10 @@ function registerTools(server: McpServer, deps: McpDeps, previewOnce: PreviewOnc
 
   server.registerTool(
     "export_deck",
-    { description: "Get the download URL for a zip export of one of your local sessions' decks.", inputSchema: { session_id: z.string() } },
-    wrap(async ({ session_id }) => {
-      const row = resolveLocalSession(deps.store, deps.cfg, session_id);
-      const url = `http://127.0.0.1:${deps.cfg.port}/api/sessions/${row.id}/export`;
+    { description: "Get the download URL for a zip export of one of your local decks.", inputSchema: { deck_id: z.string().describe(DECK_ID_DOC) } },
+    wrap(async ({ deck_id }) => {
+      const row = resolveLocalDeck(deps.store, deps.cfg, deck_id);
+      const url = `http://127.0.0.1:${deps.cfg.port}/api/decks/${row.id}/export`;
       return textResult(
         `${url}\n` +
           `Zip contains presentations/${row.slug}/ (slides.md and its assets: images/, charts/, ...), excluding the generated preview/ directory.`,
@@ -507,6 +525,21 @@ function methodNotAllowed(res: Response): void {
 // there is no cross-request MCP session state to manage, which is the right shape for
 // this local, single (dev) user, no-auth trial. GET and DELETE have nothing to do in
 // stateless mode (no session to resume or terminate), so they 405 like the SDK example.
+function logToolCall(body: unknown): void {
+  const msgs = Array.isArray(body) ? body : [body];
+  for (const m of msgs) {
+    if (typeof m !== "object" || m === null) continue;
+    const { method, params } = m as { method?: unknown; params?: unknown };
+    if (method !== "tools/call" || typeof params !== "object" || params === null) continue;
+    const { name, arguments: args } = params as { name?: unknown; arguments?: unknown };
+    const shown =
+      typeof args === "object" && args !== null
+        ? Object.fromEntries(Object.entries(args).map(([k, v]) => [k, typeof v === "string" && v.length > 80 ? `<${v.length} chars>` : v]))
+        : args;
+    console.log(`[mcp] tools/call ${String(name)} params=${JSON.stringify({ ...(params as object), arguments: shown }).slice(0, 600)}`);
+  }
+}
+
 export function mountMcp(app: Express, deps: McpDeps): void {
   const previewOnce = makePreviewOnce(deps.hostRenderer);
   const checkLayoutOnce = makeCheckLayoutOnce(deps.hostRenderer);
@@ -527,6 +560,10 @@ export function mountMcp(app: Express, deps: McpDeps): void {
   }
 
   app.post("/mcp", async (req: Request, res: Response) => {
+    // DECKD_DEBUG_MCP=1 logs each tools/call as it arrives (tool name + argument
+    // keys, never values) -- the one place to see what an MCP client actually sent
+    // when a tool reports a missing argument.
+    if (process.env.DECKD_DEBUG_MCP) logToolCall(req.body);
     const server = getServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => {

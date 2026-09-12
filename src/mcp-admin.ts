@@ -22,7 +22,7 @@ const SERVER_VERSION = "1.0.0";
 
 const SERVER_INSTRUCTIONS = [
   "deckd-admin manages the live content bundle (theme, assets, example decks, guide) that every",
-  "deckd render uses. A change here applies immediately to every session's next render, with no",
+  "deckd render uses. A change here applies immediately to every deck's next render, with no",
   "restart and no review step, and there is no version history -- read a file with",
   "read_bundle_file before overwriting or deleting it if you want to be able to restore it by hand.",
   "Call get_bundle_info first to see the manifest and the full file listing.",

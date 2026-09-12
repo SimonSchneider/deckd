@@ -52,7 +52,7 @@
   }
   .err { color: var(--error); font-size: 12px; min-height: 1.2em; }
 
-  /* ---- header bar: every global/session control lives here ------------ */
+  /* ---- header bar: every global/deck control lives here ------------ */
   #mainHeader {
     display: flex; align-items: center; gap: 10px; padding: 0 16px; height: 52px;
     background: var(--green); color: #fff; flex-shrink: 0;
@@ -212,7 +212,7 @@
   <div class="wordmark">deckd</div>
 
   <div class="header-group">
-    <select id="sessionSwitcher" aria-label="Select a deck"></select>
+    <select id="deckSwitcher" aria-label="Select a deck"></select>
     <button id="deleteDeckBtn" class="btn btn-ghost" type="button" hidden title="Delete this deck">Delete</button>
   </div>
 
@@ -310,31 +310,30 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const sessionId = new URLSearchParams(location.search).get('session');
-const initialDeck = new URLSearchParams(location.search).get('deck');
+const deckId = new URLSearchParams(location.search).get('deck');
 const exampleParam = new URLSearchParams(location.search).get('example');
 
-// Three URL shapes, one workspace: '?session=<id>' (own deck), optionally
-// '&deck=<slug>' for a read-only example previewed inside that session;
-// '?example=<slug>' with no session at all, for a fully sessionless example
+// Three URL shapes, one workspace: '?deck=<id>' (own deck), optionally
+// '&example=<slug>' for a read-only example previewed inside that deck;
+// '?example=<slug>' with no deck at all, for a fully standalone example
 // view; or neither, for the empty "nothing selected yet" state. viewMode picks
-// which REST namespace (/api/sessions/:id/... vs /api/examples/:slug/...) the
+// which REST namespace (/api/decks/:id/... vs /api/examples/:slug/...) the
 // rest of this script talks to -- see statusEndpointFor/sourceEndpointFor/etc.
-const viewMode = sessionId !== null && sessionId !== '' ? 'session'
+const viewMode = deckId !== null && deckId !== '' ? 'deck'
   : (exampleParam !== null && exampleParam !== '' ? 'example' : 'empty');
 const activeExampleSlug = viewMode === 'example' ? exampleParam : null;
 
-// One switcher in the header covers both: which session ("Your decks", own
+// One switcher in the header covers both: which deck ("Your decks", own
 // deck) and which example deck ("Examples") to preview -- see
 // switcherValue()/renderSwitcher() below.
-let selectedDeck = viewMode === 'session' ? (initialDeck !== null && initialDeck !== '' ? initialDeck : null)
+let selectedDeck = viewMode === 'deck' ? (exampleParam !== null && exampleParam !== '' ? exampleParam : null)
   : viewMode === 'example' ? activeExampleSlug : null;
 let shownPdfMtime = null;
 let ownSlug = null;
-let meSessions = null;
-// Loaded once via GET /api/examples (loadExamples()), independent of session
+let meDecks = null;
+// Loaded once via GET /api/examples (loadExamples()), independent of deck
 // state -- the whole point of this fix: examples used to come from a
-// session's own status response, so they were empty with no session selected.
+// deck's own status response, so they were empty with no deck selected.
 let exampleSlugs = null;
 let switcherRenderKey = null;
 // Guards the auto-render-on-selection trigger below (poll()): keyed by
@@ -355,25 +354,25 @@ async function jsonFetch(url, opts) {
   return { ok: r.ok, status: r.status, body };
 }
 
-// ---- header: session switcher, new-deck dialog, download menu, mcp popover ----
+// ---- header: deck switcher, new-deck dialog, download menu, mcp popover ----
 
 function initHeader() {
-  $('deleteDeckBtn').hidden = viewMode !== 'session';
+  $('deleteDeckBtn').hidden = viewMode !== 'deck';
   $('statusChip').hidden = viewMode === 'empty';
   $('downloadMenuWrap').hidden = viewMode === 'empty';
 
-  $('sessionSwitcher').onchange = () => {
-    const v = $('sessionSwitcher').value;
+  $('deckSwitcher').onchange = () => {
+    const v = $('deckSwitcher').value;
     if (v === '') return;
-    if (v.startsWith('s:')) {
-      location.href = `/?session=${encodeURIComponent(v.slice(2))}`;
+    if (v.startsWith('d:')) {
+      location.href = `/?deck=${encodeURIComponent(v.slice(2))}`;
     } else if (v.startsWith('e:')) {
       const slug = v.slice(2);
-      // Picking an example while a session is active keeps browsing inside
-      // that session (existing behavior); with no session, it's the new
-      // fully sessionless view.
-      location.href = sessionId !== null
-        ? `/?session=${encodeURIComponent(sessionId)}&deck=${encodeURIComponent(slug)}`
+      // Picking an example while a deck is active keeps browsing inside
+      // that deck (existing behavior); with no deck, it's the new
+      // fully standalone view.
+      location.href = deckId !== null
+        ? `/?deck=${encodeURIComponent(deckId)}&example=${encodeURIComponent(slug)}`
         : `/?example=${encodeURIComponent(slug)}`;
     }
   };
@@ -401,7 +400,7 @@ function initHeader() {
   document.addEventListener('click', closeHeaderMenus);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeHeaderMenus(); });
 
-  void loadSessionSwitcher();
+  void loadDeckSwitcher();
   void loadExamples();
 }
 
@@ -436,9 +435,9 @@ async function copyMcpUrl() {
   setTimeout(() => { statusEl.textContent = ''; }, 2000);
 }
 
-async function loadSessionSwitcher() {
+async function loadDeckSwitcher() {
   const { body } = await jsonFetch('/api/me');
-  meSessions = body === null ? [] : body.sessions;
+  meDecks = body === null ? [] : body.decks;
   maybeRenderSwitcher();
 }
 
@@ -448,29 +447,29 @@ async function loadExamples() {
   maybeRenderSwitcher();
 }
 
-// 's:<sessionId>' selects a session's own deck; 'e:<slug>' selects an example
-// (sessionless, or within the current session -- see the onchange handler
+// 'd:<deckId>' selects one of your decks; 'e:<slug>' selects an example
+// (standalone, or within the current deck -- see the onchange handler
 // above). selectedDeck === null (the common case) or === ownSlug both mean
 // "own deck" -- ownSlug is only known after the first poll(), so this stays
 // correct before and after that.
 function switcherValue() {
-  if (viewMode === 'session') return (selectedDeck === null || selectedDeck === ownSlug) ? `s:${sessionId}` : `e:${selectedDeck}`;
+  if (viewMode === 'deck') return (selectedDeck === null || selectedDeck === ownSlug) ? `d:${deckId}` : `e:${selectedDeck}`;
   if (viewMode === 'example') return `e:${activeExampleSlug}`;
   return '';
 }
 
 function maybeRenderSwitcher() {
-  const key = JSON.stringify([(meSessions ?? []).map((s) => [s.id, s.name]), exampleSlugs, switcherValue()]);
+  const key = JSON.stringify([(meDecks ?? []).map((s) => [s.id, s.name]), exampleSlugs, switcherValue()]);
   if (key === switcherRenderKey) return;
   switcherRenderKey = key;
   renderSwitcher();
 }
 
 function renderSwitcher() {
-  const select = $('sessionSwitcher');
+  const select = $('deckSwitcher');
   select.textContent = '';
-  const sessions = meSessions ?? [];
-  if (sessions.length === 0) {
+  const decks = meDecks ?? [];
+  if (decks.length === 0) {
     const opt = document.createElement('option');
     opt.value = '';
     opt.textContent = 'No decks yet';
@@ -480,10 +479,10 @@ function renderSwitcher() {
   }
   select.disabled = false;
   const current = switcherValue();
-  const knownSession = current.startsWith('s:') && sessions.some((s) => `s:${s.id}` === current);
+  const knownDeck = current.startsWith('d:') && decks.some((d) => `d:${d.id}` === current);
   const knownExample = current.startsWith('e:') && exampleSlugs !== null && exampleSlugs.some((d) => `e:${d}` === current);
 
-  if (!knownSession && !knownExample) {
+  if (!knownDeck && !knownExample) {
     const placeholder = document.createElement('option');
     placeholder.value = '';
     placeholder.textContent = 'Select a deck…';
@@ -493,17 +492,17 @@ function renderSwitcher() {
 
   const yourGroup = document.createElement('optgroup');
   yourGroup.label = 'Your decks';
-  for (const s of sessions) {
+  for (const s of decks) {
     const opt = document.createElement('option');
-    opt.value = `s:${s.id}`;
+    opt.value = `d:${s.id}`;
     opt.textContent = s.name;
-    if (knownSession && opt.value === current) opt.selected = true;
+    if (knownDeck && opt.value === current) opt.selected = true;
     yourGroup.appendChild(opt);
   }
   select.appendChild(yourGroup);
 
-  // Examples are bundle-wide and loaded independently of any session
-  // (loadExamples(), GET /api/examples) -- always populated, session or not.
+  // Examples are bundle-wide and loaded independently of any deck
+  // (loadExamples(), GET /api/examples) -- always populated, deck or not.
   const exGroup = document.createElement('optgroup');
   exGroup.label = 'Examples';
   if (exampleSlugs === null) {
@@ -531,9 +530,9 @@ function renderSwitcher() {
 }
 
 async function onDeleteCurrent() {
-  if (sessionId === null) return;
+  if (deckId === null) return;
   if (!confirm('Delete this deck?')) return;
-  await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+  await fetch(`/api/decks/${deckId}`, { method: 'DELETE' });
   location.href = '/';
 }
 
@@ -582,17 +581,17 @@ async function onCreateDeck(e) {
   try {
     let r;
     if (file && file.name.toLowerCase().endsWith('.zip')) {
-      r = await fetch(`/api/sessions/import?name=${encodeURIComponent(name)}`, {
+      r = await fetch(`/api/decks/import?name=${encodeURIComponent(name)}`, {
         method: 'POST', body: file,
       });
     } else if (file && file.name.toLowerCase().endsWith('.md')) {
       const seedMd = await file.text();
-      r = await fetch('/api/sessions', {
+      r = await fetch('/api/decks', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ name, seedMd }),
       });
     } else {
-      r = await fetch('/api/sessions', {
+      r = await fetch('/api/decks', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ name }),
       });
@@ -600,7 +599,7 @@ async function onCreateDeck(e) {
     if (!r.ok) { errEl.textContent = 'failed to create deck'; return; }
     const row = await r.json().catch(() => null);
     if (row !== null && typeof row.id === 'string') {
-      location.href = `/?session=${encodeURIComponent(row.id)}`;
+      location.href = `/?deck=${encodeURIComponent(row.id)}`;
     } else {
       location.reload();
     }
@@ -707,18 +706,18 @@ function showConflictBanner(content, mtime) {
 }
 
 // Mode-aware REST endpoint builders: everywhere else in this script that needs
-// a URL for a given deck goes through one of these, so 'session' vs 'example'
+// a URL for a given deck goes through one of these, so 'deck' vs 'example'
 // stays a single decision made here rather than scattered per call site.
 function statusEndpointFor(deck) {
-  if (viewMode === 'session') return `/api/sessions/${sessionId}${deck === null ? '' : `?deck=${encodeURIComponent(deck)}`}`;
+  if (viewMode === 'deck') return `/api/decks/${deckId}${deck === null ? '' : `?example=${encodeURIComponent(deck)}`}`;
   return `/api/examples/${encodeURIComponent(deck)}`;
 }
 function sourceEndpointFor(deck) {
-  if (viewMode === 'session') return `/api/sessions/${sessionId}/source?deck=${encodeURIComponent(deck ?? '')}`;
+  if (viewMode === 'deck') return `/api/decks/${deckId}/source?example=${encodeURIComponent(deck ?? '')}`;
   return `/api/examples/${encodeURIComponent(deck)}/source`;
 }
 function pdfEndpointFor(deck, download) {
-  if (viewMode === 'session') return `/api/sessions/${sessionId}/pdf?deck=${encodeURIComponent(deck ?? '')}${download ? '&download=1' : ''}`;
+  if (viewMode === 'deck') return `/api/decks/${deckId}/pdf?example=${encodeURIComponent(deck ?? '')}${download ? '&download=1' : ''}`;
   return `/api/examples/${encodeURIComponent(deck)}/pdf${download ? '?download=1' : ''}`;
 }
 
@@ -733,8 +732,8 @@ async function loadEditorSource() {
   hideConflictBanner();
   $('editorTextarea').value = body.content;
   updateEditorDirtyUI();
-  // A sessionless example has no "own deck" to compare against -- it is
-  // always read-only. Within a session, only the session's own deck is editable.
+  // A standalone example has no "own deck" to compare against -- it is
+  // always read-only. Within a deck, only its own slides are editable.
   const readonly = viewMode === 'example' || (ownSlug !== null && deck !== ownSlug);
   $('editorTextarea').readOnly = readonly;
   $('editorReadonlyNote').hidden = !readonly;
@@ -745,15 +744,15 @@ async function loadEditorSource() {
 
 async function saveSource() {
   // There is no write route for an example (GET-only, see server.ts), and
-  // saveSource always PUTs the session's OWN deck otherwise (see the server
+  // saveSource always PUTs the deck's OWN slides otherwise (see the server
   // route comment); the Save button is disabled for a non-own/example deck,
   // but a keyboard shortcut (Cmd/Ctrl+S) still reaches this function
   // directly, so the same checks are enforced here too.
-  if (viewMode !== 'session') return;
+  if (viewMode !== 'deck') return;
   if (ownSlug !== null && editorDeckShown !== ownSlug) return;
   if (editorLoadedMtime === null) return;
   const content = $('editorTextarea').value;
-  const { status, body } = await jsonFetch(`/api/sessions/${sessionId}/source`, {
+  const { status, body } = await jsonFetch(`/api/decks/${deckId}/source`, {
     method: 'PUT', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ content, baseMtime: editorLoadedMtime }),
   });
@@ -769,17 +768,17 @@ async function saveSource() {
 }
 
 async function onUploadImage() {
-  if (viewMode !== 'session') return;
+  if (viewMode !== 'deck') return;
   const file = $('imageInput').files[0];
   if (!file) return;
-  const r = await fetch(`/api/sessions/${sessionId}/assets?name=${encodeURIComponent(file.name)}`, {
+  const r = await fetch(`/api/decks/${deckId}/assets?name=${encodeURIComponent(file.name)}`, {
     method: 'POST', body: file,
   });
   $('editorStatus').textContent = r.ok ? `added images/${file.name}` : `upload failed: ${file.name}`;
   $('imageInput').value = '';
 }
 
-// ---- empty workspace (no session selected yet) -------------------------
+// ---- empty workspace (no deck selected yet) -------------------------
 
 function initEmptyWorkspace() {
   $('editorTextarea').placeholder = 'Select a deck above, or create a new one, to start editing.';
@@ -789,10 +788,10 @@ function initEmptyWorkspace() {
   $('previewEmptyText').textContent = 'Select a deck above, or create a new one, to see its preview.';
 }
 
-// ---- active workspace: a session's own deck, or a sessionless example ----
+// ---- active workspace: one of your decks, or a standalone example ----
 
 function initActiveWorkspace() {
-  if (viewMode === 'session') $('imageInput').onchange = () => void onUploadImage();
+  if (viewMode === 'deck') $('imageInput').onchange = () => void onUploadImage();
   void poll();
   setInterval(() => void poll(), 2000);
 }
@@ -801,23 +800,23 @@ function initActiveWorkspace() {
 
 function updateLinks() {
   $('dlPdf').href = pdfEndpointFor(selectedDeck, true);
-  $('dlPptx').href = viewMode === 'session' ? `/api/sessions/${sessionId}/pptx?deck=${encodeURIComponent(selectedDeck ?? '')}` : '#';
-  $('dlExport').href = viewMode === 'session' ? `/api/sessions/${sessionId}/export` : '#';
+  $('dlPptx').href = viewMode === 'deck' ? `/api/decks/${deckId}/pptx?example=${encodeURIComponent(selectedDeck ?? '')}` : '#';
+  $('dlExport').href = viewMode === 'deck' ? `/api/decks/${deckId}/export` : '#';
 }
 
-// Delete removes the whole session, so it makes no sense while previewing an
-// example (which may have no session at all); export always zips the
-// session's OWN deck (see server.ts's /export route) and PPTX has no example
+// Delete removes the whole deck, so it makes no sense while previewing an
+// example (which may have no deck at all); export always zips the
+// deck's OWN slides (see server.ts's /export route) and PPTX has no example
 // route at all (see server.ts) -- both are misleading or unavailable there.
 function updateDeckScopedUI() {
-  const isOwnDeck = viewMode === 'session' && (ownSlug === null || selectedDeck === null || selectedDeck === ownSlug);
+  const isOwnDeck = viewMode === 'deck' && (ownSlug === null || selectedDeck === null || selectedDeck === ownSlug);
   $('deleteDeckBtn').hidden = !isOwnDeck;
   $('dlExport').hidden = !isOwnDeck;
-  $('dlPptx').hidden = viewMode !== 'session';
+  $('dlPptx').hidden = viewMode !== 'deck';
 }
 
 function requestRender(deck, pptx) {
-  if (viewMode === 'session') return fetch(`/api/sessions/${sessionId}/render?deck=${encodeURIComponent(deck)}${pptx ? '&pptx=1' : ''}`, { method: 'POST' });
+  if (viewMode === 'deck') return fetch(`/api/decks/${deckId}/render?example=${encodeURIComponent(deck)}${pptx ? '&pptx=1' : ''}`, { method: 'POST' });
   return fetch(`/api/examples/${encodeURIComponent(deck)}/render${pptx ? '?pptx=1' : ''}`, { method: 'POST' });
 }
 
@@ -850,7 +849,7 @@ function isStale(artifactMtime, sourceMtime) {
 
 async function handleDownload(kind) {
   if (viewMode === 'empty' || selectedDeck === null) return;
-  if (kind === 'pptx' && viewMode !== 'session') return; // no PPTX route for examples
+  if (kind === 'pptx' && viewMode !== 'deck') return; // no PPTX route for examples
   const link = $(kind === 'pdf' ? 'dlPdf' : 'dlPptx');
   const original = link.textContent;
   const { ok, body } = await jsonFetch(statusEndpointFor(selectedDeck));
@@ -872,7 +871,7 @@ async function handleDownload(kind) {
 // refreshed here if one already exists -- export never generates a first pptx
 // a deck never asked for.
 async function handleExport() {
-  if (viewMode !== 'session' || ownSlug === null) return;
+  if (viewMode !== 'deck' || ownSlug === null) return;
   const link = $('dlExport');
   const original = link.textContent;
   const { ok, body } = await jsonFetch(statusEndpointFor(ownSlug));
@@ -903,11 +902,11 @@ async function poll() {
   const { ok, body } = await jsonFetch(statusEndpointFor(selectedDeck));
   if (!ok || body === null) { setStatus('server unreachable', 'broken'); return; }
 
-  if (viewMode === 'session') {
-    ownSlug = body.session.slug;
+  if (viewMode === 'deck') {
+    ownSlug = body.deck.slug;
     const decks = body.decks;
     if (selectedDeck === null || !decks.includes(selectedDeck)) {
-      selectedDeck = decks.includes(body.session.slug) ? body.session.slug : (decks[0] ?? null);
+      selectedDeck = decks.includes(body.deck.slug) ? body.deck.slug : (decks[0] ?? null);
     }
   }
   updateLinks();
@@ -949,7 +948,7 @@ async function poll() {
     $('pdf').hidden = body.pdfMtime === null;
     if (body.pdfMtime !== null && body.pdfMtime !== shownPdfMtime && !body.render.rendering) {
       shownPdfMtime = body.pdfMtime;
-      $('pdf').src = `${pdfEndpointFor(selectedDeck, false)}${viewMode === 'session' ? '&' : '?'}v=${body.pdfMtime}`;
+      $('pdf').src = `${pdfEndpointFor(selectedDeck, false)}${viewMode === 'deck' ? '&' : '?'}v=${body.pdfMtime}`;
     }
   }
 

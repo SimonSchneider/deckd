@@ -16,7 +16,7 @@ function deferredRun() {
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe("RenderQueue", () => {
-  it("serializes per session and coalesces queued renders", async () => {
+  it("serializes per deck and coalesces queued renders", async () => {
     const { run, pending } = deferredRun();
     const q = new RenderQueue(run, 2);
     q.enqueue(job({ pptx: false }));
@@ -55,7 +55,7 @@ describe("RenderQueue", () => {
     expect(q.status("s1:a").last).toMatchObject({ ok: false, code: 1 });
     expect(q.status("s1:a").last?.output).toContain("boom");
   });
-  it("keys running/queued/results by a composite session:deck key so decks stay independent", async () => {
+  it("keys running/queued/results by a composite deck:deck key so decks stay independent", async () => {
     const { run, pending } = deferredRun();
     const q = new RenderQueue(run, 2);
     const keyA = "s1:deck-a";
@@ -78,7 +78,7 @@ describe("RenderQueue", () => {
     expect(q.status(keyA).last?.output).toContain("a-again");
     expect(q.status(keyB).last?.output).toContain("b-done");
   });
-  it("prune drops queued/result state for keys under a prefix, leaving other sessions alone", async () => {
+  it("prune drops queued/result state for keys under a prefix, leaving other decks alone", async () => {
     const { run, pending } = deferredRun();
     const q = new RenderQueue(run, 3);
     q.enqueue(job({ key: "s1:a" }));
@@ -96,10 +96,10 @@ describe("RenderQueue", () => {
 
     q.prune("s1:");
 
-    expect(q.status("s1:a").last).toBeNull(); // finished result for the deleted session is gone
+    expect(q.status("s1:a").last).toBeNull(); // finished result for the deleted deck is gone
     expect(q.status("s1:b").queued).toBe(false); // queued rerun dropped
     expect(q.status("s1:b").rendering).toBe(true); // the render already in flight is not interrupted
-    expect(q.status("s2:a").last?.output).toContain("s2-done"); // a different session is untouched
+    expect(q.status("s2:a").last?.output).toContain("s2-done"); // a different deck is untouched
 
     pending[2]?.resolve({ code: 0, output: "s1b-done" });
     await settle();

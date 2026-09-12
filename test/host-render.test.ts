@@ -444,7 +444,7 @@ echo "rendered $out"
   });
 
   // A3: sanitizeKey alone collapses distinct raw keys ("a:b" and "a_b" both sanitize to
-  // "a_b"), which would let two sessions race the same scratch dir.
+  // "a_b"), which would let two decks race the same scratch dir.
   it("gives distinct scratch-dir names to raw keys that sanitize to the same string", () => {
     expect(sanitizeKey("a:b")).not.toBe(sanitizeKey("a_b"));
   });

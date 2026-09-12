@@ -5,7 +5,7 @@ import { loadBundle, type Bundle } from "../src/bundle.js";
 
 const SLIDES_MD = "---\nmarp: true\ntheme: sample\npaginate: true\ntitle: Template gallery\n---\n\n# Template gallery\n";
 
-// A plain, empty session app dir for tests to seed whatever presentations/<slug>
+// A plain, empty deck app dir for tests to seed whatever presentations/<slug>
 // they need on top of.
 export function tmpAppDir(): string {
   return mkdtempSync(join(tmpdir(), "deckd-app-"));
